@@ -202,12 +202,22 @@ function startHero() {
 async function initialize() {
   try {
     state.config=await api('/api/config');
-    const session=await api('/api/session',{method:'POST',body:JSON.stringify({init_data:tg?.initData||''})});
+    const launchFragment=new URLSearchParams(location.hash.slice(1));
+    const launchQuery=new URLSearchParams(location.search);
+    const launchTicket=launchQuery.get('ticket')||launchFragment.get('ticket')||'';
+    const fragmentStartParam=launchQuery.get('startapp')||launchFragment.get('startapp')||'';
+    const session=await api('/api/session',{method:'POST',body:JSON.stringify({
+      init_data:tg?.initData||'',
+      launch_ticket:launchTicket,
+    })});
+    // Remove the short-lived credential from the address after it is accepted.
+    // The longer API session token remains only in this page's memory.
+    if(launchTicket) history.replaceState(null,'',location.pathname);
     Object.assign(state,{token:session.token,user:session.user,profile:session.profile});
     renderProfile(); startHero(); bindUI();
     $('#app').classList.remove('hidden'); await sleep(350); $('#boot').classList.add('out'); setTimeout(()=>$('#boot').remove(),700);
     if(!session.registered) openModal('#onboarding'); else await loadRecent();
-    const startParam=tg?.initDataUnsafe?.start_param||new URLSearchParams(location.search).get('startapp');
+    const startParam=tg?.initDataUnsafe?.start_param||fragmentStartParam||new URLSearchParams(location.search).get('startapp');
     if(startParam?.startsWith('join_')) {
       if(session.registered) await joinChallenge(startParam.slice(5));
       else state.pendingChallenge=startParam.slice(5);
@@ -215,7 +225,7 @@ async function initialize() {
   } catch(error) {
     $('#boot').classList.add('out'); $('#app').classList.remove('hidden');
     setTimeout(()=>$('#boot')?.remove(),500); toast(error.message,'error');
-    document.body.insertAdjacentHTML('beforeend',`<div class="modal-backdrop"><div class="modal"><div class="modal-symbol">♞</div><h2>Telegram orqali oching</h2><p>${escapeHtml(error.message)}</p><small>Mahalliy sinov uchun .env faylida DEV_AUTH=true qiymatini o‘rnating.</small></div></div>`);
+    document.body.insertAdjacentHTML('beforeend',`<div class="modal-backdrop"><div class="modal"><div class="modal-symbol">♞</div><h2>Telegram orqali oching</h2><p>${escapeHtml(error.message)}</p><small>Bot chatiga qayting, /start yuboring va bot yuborgan yangi ARENANI OCHISH tugmasini bosing.</small></div></div>`);
   }
 }
 
