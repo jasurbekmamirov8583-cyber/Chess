@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/+esm';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -9,7 +8,7 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const tg = window.Telegram?.WebApp;
 const state = {
   config: null, token: '', user: null, profile: null, game: null,
-  supabase: null, channel: null, board: null, chess: new Chess(),
+  socket: null, board: null, chess: new Chess(),
   selected: null, legal: [], sound: true, mode: 'friend', aiLevel: 2,
   time: 600, increment: 3, shareUrl: '', moving: false, aiThinking: false, timeoutClaimed: false, pendingChallenge: '', realtimeLive: false,
 };
@@ -203,17 +202,7 @@ function startHero() {
 async function initialize() {
   try {
     state.config=await api('/api/config');
-    if(!state.config.supabase_url||!state.config.supabase_anon_key)throw new Error('Supabase public kaliti sozlanmagan');
-    state.supabase=createClient(state.config.supabase_url,state.config.supabase_anon_key,{auth:{persistSession:true,autoRefreshToken:true}});
-    let {data:{session:supaSession}}=await state.supabase.auth.getSession();
-    if(!supaSession){const result=await state.supabase.auth.signInAnonymously();if(result.error)throw new Error('Supabase’da Anonymous Sign-ins funksiyasini yoqing');supaSession=result.data.session}
-    let session;
-    try{session=await api('/api/session',{method:'POST',body:JSON.stringify({init_data:tg?.initData||'',supabase_token:supaSession.access_token})})}
-    catch(error){
-      if(error.message!=='SESSION_CONFLICT')throw error;
-      await state.supabase.auth.signOut();const retry=await state.supabase.auth.signInAnonymously();if(retry.error)throw retry.error;supaSession=retry.data.session;
-      session=await api('/api/session',{method:'POST',body:JSON.stringify({init_data:tg?.initData||'',supabase_token:supaSession.access_token})});
-    }
+    const session=await api('/api/session',{method:'POST',body:JSON.stringify({init_data:tg?.initData||''})});
     Object.assign(state,{token:session.token,user:session.user,profile:session.profile});
     renderProfile(); startHero(); bindUI();
     $('#app').classList.remove('hidden'); await sleep(350); $('#boot').classList.add('out'); setTimeout(()=>$('#boot').remove(),700);
@@ -284,12 +273,14 @@ function shareChallenge(){
 async function copyChallenge(){try{await navigator.clipboard.writeText(state.shareUrl);toast('Havola nusxalandi','good')}catch{toast(state.shareUrl)}}
 
 async function subscribe(gameId){
-  if(!state.supabase)return;
-  if(state.channel)await state.supabase.removeChannel(state.channel);
-  state.channel=state.supabase.channel(`game:${gameId}`).on('postgres_changes',{event:'UPDATE',schema:'public',table:'games',filter:`id=eq.${gameId}`},payload=>{
-    const game={...payload.new,my_color:state.game?.my_color||'white'};
-    if($('#challenge-modal:not(.hidden)')&&game.status==='active'){closeModal($('#challenge-modal'));enterGame(game)}else updateGame(game);
-  }).subscribe(status=>{state.realtimeLive=status==='SUBSCRIBED';$('#live-indicator').classList.toggle('live',state.realtimeLive)});
+  if(state.socket){state.socket.onclose=null;state.socket.close()}
+  const protocol=location.protocol==='https:'?'wss:':'ws:';
+  const socket=new WebSocket(`${protocol}//${location.host}/ws/games/${gameId}`);
+  state.socket=socket;
+  socket.onopen=()=>socket.send(JSON.stringify({token:state.token}));
+  socket.onmessage=event=>{try{state.realtimeLive=true;$('#live-indicator').classList.add('live');const payload=JSON.parse(event.data),game=payload.game;if(!game)return;if($('#challenge-modal:not(.hidden)')&&game.status==='active'){closeModal($('#challenge-modal'));enterGame(game)}else updateGame(game)}catch{}};
+  socket.onerror=()=>{state.realtimeLive=false;$('#live-indicator').classList.remove('live')};
+  socket.onclose=()=>{state.realtimeLive=false;$('#live-indicator').classList.remove('live');if(state.game?.id===gameId)setTimeout(()=>subscribe(gameId),1800)};
 }
 
 async function enterGame(game){
@@ -377,7 +368,7 @@ function reasonLabel(reason){return({checkmate:'Shox mot',stalemate:'Pat',insuff
 function showResult(g){const mine=g.my_color,status=g.status;const won=status===`${mine}_won`,draw=status==='draw';$('#result-icon').textContent=won?'♛':draw?'½':'♟';$('#result-title').textContent=won?'G‘ALABA':draw?'DURANG':'MAG‘LUBIYAT';$('#result-reason').textContent=reasonLabel(g.result_reason);openModal('#result-modal');if(won)audio.victory()}
 
 async function leaveGame(){
-  if(state.channel&&state.supabase){await state.supabase.removeChannel(state.channel);state.channel=null}state.realtimeLive=false;state.game=null;$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');await loadRecent();
+  if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null}state.realtimeLive=false;state.game=null;$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');await loadRecent();
 }
 async function loadRecent(){
   if(!state.token)return;try{const data=await api('/api/me/games'),list=$('#recent-list');if(data.profile){state.profile=data.profile;renderProfile()}if(!data.games.length){list.innerHTML='<div class="empty-state"><span>♟</span><p>Hali janglar yo‘q.<br>Birinchi yurishni siz boshlang.</p></div>';return}list.innerHTML=data.games.map(g=>{const mine=g.my_color,won=g.status===`${mine}_won`,lost=g.status===`${mine==='white'?'black':'white'}_won`,label=g.status==='active'?'DAVOM ETADI':g.status==='waiting'?'KUTILMOQDA':g.status==='aborted'?'BEKOR':won?'G‘ALABA':lost?'MAG‘LUBIYAT':'DURANG';return `<div class="recent-item" data-game="${g.id}"><span class="recent-icon">${g.mode==='ai'?'◈':'⚔'}</span><span><b>${escapeHtml(mine==='white'?(g.black_name||'Challenge'):(g.white_name||'Raqib'))}</b><small>${g.move_history?.length||0} YURISH · ${g.time_control/60} MIN</small></span><em class="status-tag ${won?'win':lost?'loss':''}">${label}</em></div>`}).join('');$$('[data-game]',list).forEach(el=>el.onclick=async()=>{try{const d=await api(`/api/games/${el.dataset.game}`);await enterGame(d.game)}catch(e){toast(e.message,'error')}})}catch(e){toast(e.message,'error')}
