@@ -144,10 +144,24 @@ store = Store()
 
 class GameSockets:
     def __init__(self) -> None:
-        self.rooms: dict[str, dict[WebSocket, str]] = {}
+        self.rooms: dict[str, dict[WebSocket, str | None]] = {}
 
-    async def connect(self, game_id: str, websocket: WebSocket, user_id: str) -> None:
+    async def connect(self, game_id: str, websocket: WebSocket, user_id: str | None) -> None:
         self.rooms.setdefault(game_id, {})[websocket] = user_id
+
+    async def broadcast_presence(self, game_id: str) -> None:
+        room = self.rooms.get(game_id, {})
+        payload = {
+            "presence": {
+                "players": len({user_id for user_id in room.values() if user_id}),
+                "spectators": sum(1 for user_id in room.values() if user_id is None),
+            }
+        }
+        for websocket in list(room):
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                self.disconnect(game_id, websocket)
 
     def disconnect(self, game_id: str, websocket: WebSocket) -> None:
         room = self.rooms.get(game_id)
@@ -163,7 +177,7 @@ class GameSockets:
         dead: list[WebSocket] = []
         for websocket, user_id in list(room.items()):
             try:
-                await websocket.send_json({"game": public_game(game, user_id)})
+                await websocket.send_json({"game": public_game(game, user_id) if user_id else spectator_game(game)})
             except Exception:
                 dead.append(websocket)
         for websocket in dead:
@@ -189,6 +203,7 @@ class ProfileRequest(BaseModel):
 
 class GameCreateRequest(BaseModel):
     mode: Literal["friend", "ai"]
+    variant: Literal["standard", "kingofthehill", "threecheck"] = "standard"
     time_control: int = Field(default=600, ge=60, le=3600)
     increment: int = Field(default=3, ge=0, le=30)
     ai_level: int = Field(default=2, ge=1, le=4)
@@ -201,6 +216,27 @@ class MoveRequest(BaseModel):
 
 class ActionRequest(BaseModel):
     action: Literal["resign", "offer_draw", "accept_draw", "decline_draw", "abort", "claim_timeout"]
+
+
+class PreferencesRequest(BaseModel):
+    theme: Literal["registan", "cyber", "ice", "volcano"]
+    performance_mode: Literal["auto", "quality", "battery"] = "auto"
+class PuzzleCompleteRequest(BaseModel):
+    puzzle_id: str = Field(min_length=2, max_length=40)
+    elapsed_ms: int = Field(default=0, ge=0, le=3600000)
+
+
+class ClanRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=32)
+
+
+class TournamentRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=48)
+    max_players: int = Field(default=8, ge=4, le=32)
+    variant: Literal["standard", "kingofthehill", "threecheck"] = "standard"
+    time_control: int = Field(default=180, ge=60, le=1800)
+    increment: int = Field(default=0, ge=0, le=30)
+    clan_war: bool = False
 
 
 def now() -> datetime:
@@ -311,6 +347,23 @@ def public_game(game: dict[str, Any], user_id: str) -> dict[str, Any]:
     return result
 
 
+def spectator_game(game: dict[str, Any]) -> dict[str, Any]:
+    """Public game state without Telegram identifiers or private fields."""
+    allowed = {
+        "id", "code", "mode", "variant", "white_name", "black_name", "ai_level",
+        "fen", "move_history", "status", "result_reason", "turn", "time_control",
+        "increment", "white_ms", "black_ms", "last_move_at", "version",
+        "white_checks", "black_checks", "created_at", "updated_at",
+    }
+    result = {key: value for key, value in game.items() if key in allowed}
+    result["move_history"] = [
+        {"uci": move.get("uci", ""), "san": move.get("san", "")}
+        for move in game.get("move_history", [])
+    ]
+    result.update(my_color="white", spectator=True)
+    return result
+
+
 def code() -> str:
     alphabet = string.ascii_uppercase.replace("O", "") + string.digits.replace("0", "")
     return "".join(random.SystemRandom().choice(alphabet) for _ in range(7))
@@ -375,6 +428,8 @@ async def config() -> dict[str, Any]:
         "bot_username": BOT_USERNAME,
         "app_short_name": BOT_APP_SHORT_NAME,
         "dev_auth": DEV_AUTH,
+        "variants": ["standard", "kingofthehill", "threecheck"],
+        "themes": ["registan", "cyber", "ice", "volcano"],
     }
 
 
@@ -426,6 +481,50 @@ async def save_profile(body: ProfileRequest, user: dict[str, str] = Depends(curr
     return {"profile": rows[0] if rows else payload}
 
 
+@app.post("/api/preferences")
+async def save_preferences(body: PreferencesRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    profile = await require_profile(user["id"])
+    rows = await store.call(
+        "PATCH", "profiles", params={"telegram_id": f"eq.{user['id']}"},
+        body={"equipped_theme": body.theme, "performance_mode": body.performance_mode, "updated_at": iso()},
+    )
+    return {"profile": rows[0] if rows else profile}
+
+
+DAILY_PUZZLE_IDS = {"silk-mate", "tower-gate", "desert-fork", "ice-backrank", "registan-pin"}
+
+
+@app.post("/api/puzzles/complete")
+async def complete_puzzle(body: PuzzleCompleteRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    if body.puzzle_id not in DAILY_PUZZLE_IDS:
+        raise HTTPException(422, "Puzzle identifikatori noto'g'ri")
+    profile = await require_profile(user["id"])
+    today = now().date()
+    existing = await store.one("puzzle_completions", {
+        "user_id": f"eq.{user['id']}", "puzzle_id": f"eq.{body.puzzle_id}",
+        "puzzle_date": f"eq.{today.isoformat()}", "select": "*",
+    })
+    if existing:
+        return {"profile": profile, "already_completed": True}
+    last_date = profile.get("last_puzzle_date")
+    yesterday = today - timedelta(days=1)
+    streak = int(profile.get("puzzle_streak") or 0) + 1 if last_date == yesterday.isoformat() else 1
+    rating_gain = max(4, 18 - min(12, body.elapsed_ms // 15000))
+    inserted = await store.call("POST", "puzzle_completions", body={
+        "user_id": user["id"], "puzzle_id": body.puzzle_id,
+        "puzzle_date": today.isoformat(), "elapsed_ms": body.elapsed_ms,
+    }, prefer="resolution=ignore-duplicates,return=representation")
+    if not inserted:
+        return {"profile": await require_profile(user["id"]), "already_completed": True}
+    rows = await store.call("PATCH", "profiles", params={"telegram_id": f"eq.{user['id']}"}, body={
+        "puzzle_rating": int(profile.get("puzzle_rating") or 800) + rating_gain,
+        "puzzle_streak": streak, "last_puzzle_date": today.isoformat(),
+        "army_xp": int(profile.get("army_xp") or 0) + 12,
+        "updated_at": iso(),
+    })
+    return {"profile": rows[0], "rating_gain": rating_gain, "xp_gain": 12, "already_completed": False}
+
+
 @app.get("/api/me/games")
 async def my_games(user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
     uid = user["id"]
@@ -446,6 +545,7 @@ async def create_game(body: GameCreateRequest, user: dict[str, str] = Depends(cu
     profile = await require_profile(user["id"])
     payload = {
         "code": code(), "mode": body.mode, "white_id": user["id"], "white_name": profile["full_name"],
+        "variant": body.variant,
         "black_id": f"AI:{body.ai_level}" if body.mode == "ai" else None,
         "black_name": f"Zamin AI · L{body.ai_level}" if body.mode == "ai" else None,
         "ai_level": body.ai_level if body.mode == "ai" else None,
@@ -495,17 +595,64 @@ async def get_game(game_id: UUID, user: dict[str, str] = Depends(current_user)) 
     return {"game": public_game(game, user["id"])}
 
 
+@app.get("/api/watch/{game_code}")
+async def watch_game(game_code: str) -> dict[str, Any]:
+    game_code = game_code.upper().strip()
+    if not re.fullmatch(r"[A-Z1-9]{7}", game_code):
+        raise HTTPException(422, "Tomosha kodi noto'g'ri")
+    game = await store.one("games", {"code": f"eq.{game_code}", "spectators_allowed": "eq.true", "select": "*"})
+    if not game:
+        raise HTTPException(404, "Tomosha uchun o'yin topilmadi")
+    game = await settle_timeout(game)
+    return {"game": spectator_game(game)}
+
+
+@app.post("/api/games/{game_id}/rematch")
+async def rematch(game_id: UUID, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    old = await store.one("games", {"id": f"eq.{game_id}", "select": "*"})
+    if not old:
+        raise HTTPException(404, "O'yin topilmadi")
+    game_for_player(old, user["id"])
+    if old["status"] in ("waiting", "active"):
+        raise HTTPException(409, "Avval joriy o'yinni yakunlang")
+    if old["mode"] == "ai":
+        profile = await require_profile(user["id"])
+        white_id, white_name = user["id"], profile["full_name"]
+        black_id, black_name = old.get("black_id"), old.get("black_name")
+    else:
+        white_id, white_name = old.get("black_id"), old.get("black_name")
+        black_id, black_name = old.get("white_id"), old.get("white_name")
+    if not white_id or not black_id:
+        raise HTTPException(409, "Raqib hali mavjud emas")
+    payload = {
+        "code": code(), "mode": old["mode"], "variant": old.get("variant", "standard"),
+        "white_id": white_id, "white_name": white_name, "black_id": black_id, "black_name": black_name,
+        "ai_level": old.get("ai_level"), "status": "active", "time_control": old["time_control"],
+        "increment": old["increment"], "white_ms": old["time_control"] * 1000,
+        "black_ms": old["time_control"] * 1000, "last_move_at": iso(),
+    }
+    rows = await store.call("POST", "games", body=payload)
+    return {"game": public_game(rows[0], user["id"])}
+
+
 @app.websocket("/ws/games/{game_id}")
 async def game_websocket(websocket: WebSocket, game_id: UUID) -> None:
     await websocket.accept()
     try:
         auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=8)
-        user = decode_api_token(str(auth_message.get("token", "")))
         game = await store.one("games", {"id": f"eq.{game_id}", "select": "*"})
         if not game:
             await websocket.close(code=4404)
             return
-        game_for_player(game, user["id"])
+        watch_code = str(auth_message.get("watch_code", "")).upper()
+        if watch_code:
+            if not game.get("spectators_allowed", True) or not hmac.compare_digest(watch_code, str(game["code"])):
+                raise HTTPException(403, "Tomosha ruxsati yo'q")
+            user_id = None
+        else:
+            user = decode_api_token(str(auth_message.get("token", "")))
+            game_for_player(game, user["id"])
+            user_id = user["id"]
     except Exception:
         try:
             await websocket.close(code=4403)
@@ -513,15 +660,18 @@ async def game_websocket(websocket: WebSocket, game_id: UUID) -> None:
             pass
         return
     room_id = str(game_id)
-    await game_sockets.connect(room_id, websocket, user["id"])
-    await websocket.send_json({"game": public_game(game, user["id"])})
+    await game_sockets.connect(room_id, websocket, user_id)
+    await websocket.send_json({"game": public_game(game, user_id) if user_id else spectator_game(game)})
+    await game_sockets.broadcast_presence(room_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         game_sockets.disconnect(room_id, websocket)
+        await game_sockets.broadcast_presence(room_id)
     except Exception:
         game_sockets.disconnect(room_id, websocket)
+        await game_sockets.broadcast_presence(room_id)
 
 
 def elapsed_ms(game: dict[str, Any]) -> int:
@@ -553,15 +703,23 @@ async def apply_rating(game: dict[str, Any]) -> None:
     expected_w = 1 / (1 + 10 ** ((black["rating"] - white["rating"]) / 400))
     delta = round(24 * (score_w - expected_w))
     for player, change, won in ((white, delta, score_w), (black, -delta, 1 - score_w)):
+        xp_gain = 36 if won == 1 else 18 if won == 0.5 else 10
         update = {
             "rating": max(100, player["rating"] + change),
             "games_played": player["games_played"] + 1,
             "wins": player["wins"] + (1 if won == 1 else 0),
             "losses": player["losses"] + (1 if won == 0 else 0),
             "draws": player["draws"] + (1 if won == 0.5 else 0),
+            "army_xp": int(player.get("army_xp") or 0) + xp_gain,
             "updated_at": iso(),
         }
         await store.call("PATCH", "profiles", params={"telegram_id": f"eq.{player['telegram_id']}"}, body=update)
+    try:
+        await settle_competition_progress(game, score_w)
+    except Exception:
+        # Social progression must never prevent a completed chess result from
+        # being persisted and marked as rated.
+        log.exception("Competition progression failed for game %s", game.get("id"))
     await store.call("PATCH", "games", params={"id": f"eq.{game['id']}"}, body={"rating_applied": True})
 
 
@@ -661,9 +819,20 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
     board.push(move)
     actor_id = game["black_id"] if is_ai_turn else user["id"]
     history = [*game.get("move_history", []), {"uci": body.uci, "san": san, "by": actor_id}]
+    white_checks = int(game.get("white_checks") or 0)
+    black_checks = int(game.get("black_checks") or 0)
+    if board.is_check():
+        if color == "white":
+            white_checks += 1
+        else:
+            black_checks += 1
     status, reason = "active", None
     if board.is_checkmate():
         status, reason = ("white_won" if color == "white" else "black_won"), "checkmate"
+    elif game.get("variant") == "kingofthehill" and board.king(chess.WHITE if color == "white" else chess.BLACK) in (chess.D4, chess.E4, chess.D5, chess.E5):
+        status, reason = ("white_won" if color == "white" else "black_won"), "kingofthehill"
+    elif game.get("variant") == "threecheck" and (white_checks if color == "white" else black_checks) >= 3:
+        status, reason = ("white_won" if color == "white" else "black_won"), "threecheck"
     elif board.is_stalemate():
         status, reason = "draw", "stalemate"
     elif board.is_insufficient_material():
@@ -680,6 +849,7 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
         "fen": board.fen(), "move_history": history, "status": status, "result_reason": reason,
         "turn": "black" if color == "white" else "white", "draw_offer_by": None,
         remaining_key: remaining + int(game["increment"]) * 1000,
+        "white_checks": white_checks, "black_checks": black_checks,
         "last_move_at": iso(), "updated_at": iso(), "version": game["version"] + 1,
     }
     rows = await store.call(
@@ -752,6 +922,171 @@ async def game_action(game_id: UUID, body: ActionRequest, user: dict[str, str] =
         await apply_rating(rows[0])
     await game_sockets.broadcast(rows[0])
     return {"game": public_game(rows[0], user["id"])}
+
+
+async def clan_membership(user_id: str) -> dict[str, Any] | None:
+    membership = await store.one("clan_members", {"user_id": f"eq.{user_id}", "select": "*"})
+    if not membership:
+        return None
+    clan = await store.one("clans", {"id": f"eq.{membership['clan_id']}", "select": "*"})
+    if not clan:
+        return None
+    return {"clan": clan, "membership": membership, "member_count": len(await store.call("GET", "clan_members", params={"clan_id": f"eq.{clan['id']}", "select": "user_id"}))}
+
+
+async def settle_competition_progress(game: dict[str, Any], score_w: float) -> None:
+    """Award clan XP and close a one-round arena tournament idempotently."""
+    rewards = ((game["white_id"], score_w), (game["black_id"], 1 - score_w))
+    for user_id, score in rewards:
+        membership = await store.one("clan_members", {"user_id": f"eq.{user_id}", "select": "clan_id"})
+        if not membership:
+            continue
+        clan = await store.one("clans", {"id": f"eq.{membership['clan_id']}", "select": "id,xp"})
+        if clan:
+            gain = 24 if score == 1 else 12 if score == 0.5 else 6
+            await store.call("PATCH", "clans", params={"id": f"eq.{clan['id']}"}, body={"xp": int(clan.get("xp") or 0) + gain})
+
+    tournament_id = game.get("tournament_id")
+    if not tournament_id:
+        return
+    for user_id, score in rewards:
+        entry = await store.one("tournament_players", {
+            "tournament_id": f"eq.{tournament_id}", "user_id": f"eq.{user_id}", "select": "score",
+        })
+        if entry:
+            await store.call(
+                "PATCH", "tournament_players",
+                params={"tournament_id": f"eq.{tournament_id}", "user_id": f"eq.{user_id}"},
+                body={"score": float(entry.get("score") or 0) + score},
+            )
+    unfinished = await store.call("GET", "games", params={
+        "tournament_id": f"eq.{tournament_id}", "status": "in.(waiting,active)", "select": "id", "limit": "1",
+    })
+    if not unfinished:
+        await store.call("PATCH", "tournaments", params={"id": f"eq.{tournament_id}"}, body={"status": "finished"})
+
+
+@app.get("/api/social")
+async def social_hub(user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    await require_profile(user["id"])
+    clan = await clan_membership(user["id"])
+    tournaments = await store.call("GET", "tournaments", params={
+        "status": "in.(registration,active,finished)", "order": "created_at.desc", "limit": "20", "select": "*",
+    })
+    entries = await store.call("GET", "tournament_players", params={"select": "tournament_id,user_id,display_name,score"})
+    active_games = await store.call("GET", "games", params={
+        "or": f"(white_id.eq.{user['id']},black_id.eq.{user['id']})",
+        "tournament_id": "not.is.null", "status": "in.(waiting,active)", "select": "*",
+    })
+    counts: dict[str, int] = {}
+    for entry in entries:
+        key = str(entry["tournament_id"])
+        counts[key] = counts.get(key, 0) + 1
+    for tournament in tournaments:
+        tournament["player_count"] = counts.get(str(tournament["id"]), 0)
+        tournament["joined"] = any(str(e["tournament_id"]) == str(tournament["id"]) and e["user_id"] == user["id"] for e in entries)
+        tournament["standings"] = sorted(
+            [e for e in entries if str(e["tournament_id"]) == str(tournament["id"])],
+            key=lambda item: (-float(item.get("score") or 0), item["display_name"]),
+        )[:3]
+        own_game = next((game for game in active_games if str(game.get("tournament_id")) == str(tournament["id"])), None)
+        tournament["my_game"] = public_game(own_game, user["id"]) if own_game else None
+    return {"clan": clan, "tournaments": tournaments}
+
+
+@app.post("/api/clans")
+async def create_clan(body: ClanRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    profile = await require_profile(user["id"])
+    if await clan_membership(user["id"]):
+        raise HTTPException(409, "Siz allaqachon jamoaga a'zosiz")
+    rows = await store.call("POST", "clans", body={"code": code(), "name": body.name.strip(), "owner_id": user["id"]})
+    clan = rows[0]
+    await store.call("POST", "clan_members", body={"clan_id": clan["id"], "user_id": user["id"], "role": "owner"})
+    return {"clan": clan, "member_count": 1, "owner_name": profile["full_name"]}
+
+
+@app.post("/api/clans/{clan_code}/join")
+async def join_clan(clan_code: str, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    await require_profile(user["id"])
+    if await clan_membership(user["id"]):
+        raise HTTPException(409, "Avvalgi jamoangizdan chiqishingiz kerak")
+    clan = await store.one("clans", {"code": f"eq.{clan_code.upper().strip()}", "select": "*"})
+    if not clan:
+        raise HTTPException(404, "Jamoa kodi topilmadi")
+    await store.call("POST", "clan_members", body={"clan_id": clan["id"], "user_id": user["id"]})
+    return {"clan": clan}
+
+
+@app.post("/api/tournaments")
+async def create_tournament(body: TournamentRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    profile = await require_profile(user["id"])
+    membership = await clan_membership(user["id"])
+    rows = await store.call("POST", "tournaments", body={
+        "code": code(), "name": body.name.strip(), "owner_id": user["id"], "max_players": body.max_players,
+        "variant": body.variant, "time_control": body.time_control, "increment": body.increment,
+        "clan_war": body.clan_war,
+    })
+    tournament = rows[0]
+    await store.call("POST", "tournament_players", body={
+        "tournament_id": tournament["id"], "user_id": user["id"], "display_name": profile["full_name"],
+        "clan_id": membership["clan"]["id"] if membership else None,
+    })
+    tournament["player_count"] = 1
+    tournament["joined"] = True
+    return {"tournament": tournament}
+
+
+@app.post("/api/tournaments/{tournament_id}/join")
+async def join_tournament(tournament_id: UUID, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    profile = await require_profile(user["id"])
+    tournament = await store.one("tournaments", {"id": f"eq.{tournament_id}", "select": "*"})
+    if not tournament or tournament["status"] != "registration":
+        raise HTTPException(409, "Turnir ro'yxati yopilgan")
+    players = await store.call("GET", "tournament_players", params={"tournament_id": f"eq.{tournament_id}", "select": "user_id"})
+    if any(player["user_id"] == user["id"] for player in players):
+        return {"tournament": tournament, "already_joined": True}
+    if len(players) >= tournament["max_players"]:
+        raise HTTPException(409, "Turnir to'lgan")
+    membership = await clan_membership(user["id"])
+    await store.call("POST", "tournament_players", body={
+        "tournament_id": str(tournament_id), "user_id": user["id"], "display_name": profile["full_name"],
+        "clan_id": membership["clan"]["id"] if membership else None,
+    })
+    return {"tournament": tournament, "player_count": len(players) + 1}
+
+
+@app.post("/api/tournaments/{tournament_id}/start")
+async def start_tournament(tournament_id: UUID, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    tournament = await store.one("tournaments", {"id": f"eq.{tournament_id}", "select": "*"})
+    if not tournament or tournament["owner_id"] != user["id"]:
+        raise HTTPException(403, "Faqat turnir egasi boshlaydi")
+    if tournament["status"] != "registration":
+        raise HTTPException(409, "Turnir allaqachon boshlangan")
+    players = await store.call("GET", "tournament_players", params={"tournament_id": f"eq.{tournament_id}", "select": "*"})
+    if len(players) < 4:
+        raise HTTPException(409, "Turnir uchun kamida 4 o'yinchi kerak")
+    random.SystemRandom().shuffle(players)
+    if len(players) % 2:
+        bye = players[-1]
+        await store.call(
+            "PATCH", "tournament_players",
+            params={"tournament_id": f"eq.{tournament_id}", "user_id": f"eq.{bye['user_id']}"},
+            body={"score": float(bye.get("score") or 0) + 1.0},
+        )
+    games: list[dict[str, Any]] = []
+    for index in range(0, len(players) - 1, 2):
+        white, black = players[index], players[index + 1]
+        games.append({
+            "code": code(), "mode": "friend", "variant": tournament["variant"],
+            "white_id": white["user_id"], "white_name": white["display_name"],
+            "black_id": black["user_id"], "black_name": black["display_name"], "status": "active",
+            "time_control": tournament["time_control"], "increment": tournament["increment"],
+            "white_ms": tournament["time_control"] * 1000, "black_ms": tournament["time_control"] * 1000,
+            "last_move_at": iso(), "tournament_id": str(tournament_id),
+        })
+    created = await store.call("POST", "games", body=games)
+    await store.call("PATCH", "tournaments", params={"id": f"eq.{tournament_id}"}, body={"status": "active", "started_at": iso()})
+    return {"games_created": len(created), "games": [public_game(game, user["id"]) for game in created if user["id"] in (game["white_id"], game["black_id"])]}
 
 
 async def telegram(method: str, payload: dict[str, Any]) -> dict[str, Any] | None:

@@ -8,6 +8,8 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - Pat, yetarli bo‘lmagan material, 3/5 karra takrorlanish, 50/75 yurish qoidalari.
 - Server-authoritative yurish tekshiruvi (`python-chess`) va versiya orqali parallel yurishdan himoya.
 - Har biri keskin farqlanadigan procedural Staunton 3D donalari, mobilga mos avtomatik kamera, yoritish, soyalar va legal katak indikatorlari.
+- Foydalanuvchi tanlaydigan klassik yashil 2D taxta yoki kinematik 3D arena; tanlov qurilmada eslab qolinadi va o‘yin davomida ham almashtiriladi.
+- Optimistic yurish: dona server javobini kutmasdan darhol siljiydi, server rad etsa ishonchli holat avtomatik tiklanadi.
 - Urib olishda qurol, sakrash va yiqilish animatsiyasi; yurish, zarba, shax, g‘alaba, mag‘lubiyat va durang uchun qatlamli Web Audio tovushlari.
 - 4 darajali brauzer AI. Hisob foydalanuvchi qurilmasida bajariladi, Render CPU’sini band qilmaydi.
 - Telegram challenge linki va 7 belgili kod orqali multiplayer.
@@ -16,6 +18,13 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - Uch karra pozitsiya takrorlanishi va 50 yurish holati avtomatik durang; besh karra/75 yurish, pat va material yetishmasligi ham serverda tekshiriladi.
 - Profil, telefon, ELO, natijalar, FEN va har bir yurish Supabase’da saqlanadi.
 - Mobil Telegram oynasi va desktop uchun alohida responsive ko‘rinish.
+- Premove, avtomatik qayta ulanish va Supabase’dan holatni tiklash: Telegram yopilsa ham jang va soatlar davom etadi.
+- Jonli tomoshabin rejimi, online ishtirokchilar soni va Telegram’da yuboriladigan xavfsiz `?watch=` havolasi.
+- Kinematik replay, revansh va brauzerda ishlaydigan ZAMIN Coach: aniqlik foizi, burilish nuqtalari va yurish tasnifi.
+- Har kuni almashadigan taktik ekspeditsiya, vaqt, puzzle reytingi, kunlik seriya va Army XP.
+- Registan, Cyber, Muzlik va Vulqon arenalari; avtomatik, yuqori sifat va batareyani tejash grafik rejimlari.
+- XP bilan rivojlanadigan dona aura/zirhlari, clan yaratish yoki kod bilan kirish, clan XP va arena turnirlari.
+- Klassik FIDE rejimidan tashqari `Taxt uchun jang` (shoh markazga yetadi) va `Uch karra shax` variantlari.
 
 ## Tuzilma
 
@@ -34,7 +43,7 @@ requirements.txt   — Python paketlari
 ## 1. Supabase tayyorlash
 
 1. [Supabase](https://supabase.com/dashboard) da yangi loyiha yarating.
-2. `SQL Editor` ni ochib, `schema.sql` faylining hammasini bir marta ishga tushiring.
+2. `SQL Editor` ni ochib, `schema.sql` faylining hammasini ishga tushiring. Oldingi versiya o‘rnatilgan bo‘lsa ham yangi platforma ustunlari, puzzle, clan va turnir jadvallarini qo‘shish uchun yangilangan faylni yana bir marta to‘liq `Run` qiling; SQL idempotent yozilgan.
 3. Project `Connect` oynasidan quyidagilarni oling:
    - Project URL (`https://PROJECT_REF.supabase.co`) → `SUPABASE_URL`
    - Secret key (`sb_secret_...`) → `SUPABASE_SECRET_KEY`
