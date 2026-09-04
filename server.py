@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -18,7 +19,7 @@ import chess
 import httpx
 import jwt
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -62,7 +63,6 @@ RENDER_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
 APP_URL = (os.getenv("APP_URL") or (f"https://{RENDER_HOSTNAME}" if RENDER_HOSTNAME else "http://localhost:8000")).rstrip("/")
 SUPABASE_URL = normalize_supabase_url(os.getenv("SUPABASE_URL", ""))
 SUPABASE_KEY = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
 APP_SECRET = os.getenv("APP_SECRET", "")
 DEV_AUTH = os.getenv("DEV_AUTH", "false").lower() == "true"
 
@@ -108,6 +108,20 @@ class Store:
             raise HTTPException(502, "Supabase bilan ulanishda xato") from exc
         if response.status_code >= 400:
             log.error("Supabase %s %s: %s", method, table, response.text)
+            try:
+                database_error = response.json()
+            except ValueError:
+                database_error = {}
+            if database_error.get("code") == "PGRST205":
+                raise HTTPException(
+                    503,
+                    "Supabase jadvallari hali yaratilmagan. Supabase SQL Editor'da schema.sql faylini ishga tushiring.",
+                )
+            if response.status_code in (401, 403):
+                raise HTTPException(
+                    503,
+                    "Supabase Secret key noto'g'ri yoki yetarli huquqqa ega emas.",
+                )
             raise HTTPException(502, "Ma'lumotlar bazasi xatosi")
         if not response.content:
             return []
@@ -122,9 +136,41 @@ class Store:
 store = Store()
 
 
+class GameSockets:
+    def __init__(self) -> None:
+        self.rooms: dict[str, dict[WebSocket, str]] = {}
+
+    async def connect(self, game_id: str, websocket: WebSocket, user_id: str) -> None:
+        self.rooms.setdefault(game_id, {})[websocket] = user_id
+
+    def disconnect(self, game_id: str, websocket: WebSocket) -> None:
+        room = self.rooms.get(game_id)
+        if not room:
+            return
+        room.pop(websocket, None)
+        if not room:
+            self.rooms.pop(game_id, None)
+
+    async def broadcast(self, game: dict[str, Any]) -> None:
+        game_id = str(game["id"])
+        room = self.rooms.get(game_id, {})
+        dead: list[WebSocket] = []
+        for websocket, user_id in list(room.items()):
+            try:
+                await websocket.send_json({"game": public_game(game, user_id)})
+            except Exception:
+                dead.append(websocket)
+        for websocket in dead:
+            self.disconnect(game_id, websocket)
+
+
+game_sockets = GameSockets()
+pending_names: dict[str, str] = {}
+awaiting_name: set[str] = set()
+
+
 class SessionRequest(BaseModel):
     init_data: str = ""
-    supabase_token: str = Field(min_length=20)
 
 
 class ProfileRequest(BaseModel):
@@ -188,14 +234,13 @@ def verify_init_data(raw: str) -> dict[str, Any]:
         raise HTTPException(401, "Telegram foydalanuvchisi topilmadi") from exc
 
 
-def make_token(user: dict[str, Any], auth_id: str) -> str:
+def make_token(user: dict[str, Any]) -> str:
     if not APP_SECRET:
         raise HTTPException(503, "APP_SECRET sozlanmagan")
     stamp = now()
     payload = {
         "sub": str(user["id"]),
         "telegram_id": str(user["id"]),
-        "auth_id": auth_id,
         "aud": "zamin-api",
         "iat": int(stamp.timestamp()),
         "exp": int((stamp + timedelta(hours=12)).timestamp()),
@@ -203,16 +248,20 @@ def make_token(user: dict[str, Any], auth_id: str) -> str:
     return jwt.encode(payload, APP_SECRET, algorithm="HS256")
 
 
+def decode_api_token(token: str) -> dict[str, str]:
+    try:
+        data = jwt.decode(
+            token, APP_SECRET, algorithms=["HS256"], audience="zamin-api"
+        )
+        return {"id": str(data["telegram_id"])}
+    except Exception as exc:
+        raise HTTPException(401, "Sessiya yaroqsiz") from exc
+
+
 def current_user(authorization: str = Header(default="")) -> dict[str, str]:
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, "Sessiya talab qilinadi")
-    try:
-        data = jwt.decode(
-            authorization[7:], APP_SECRET, algorithms=["HS256"], audience="zamin-api"
-        )
-        return {"id": str(data["telegram_id"]), "auth_id": str(data["auth_id"])}
-    except Exception as exc:
-        raise HTTPException(401, "Sessiya yaroqsiz") from exc
+    return decode_api_token(authorization[7:])
 
 
 def game_for_player(game: dict[str, Any], user_id: str) -> str:
@@ -279,7 +328,6 @@ async def health() -> dict[str, Any]:
         "service": "zamin-3d-chess",
         "configuration": {
             "supabase_url": bool(SUPABASE_URL.startswith("https://")),
-            "supabase_publishable_key": bool(SUPABASE_ANON_KEY),
             "supabase_secret_key": bool(SUPABASE_KEY),
             "telegram_bot_token": bool(BOT_TOKEN),
             "app_url": bool(APP_URL.startswith("https://")),
@@ -291,8 +339,6 @@ async def health() -> dict[str, Any]:
 @app.get("/api/config")
 async def config() -> dict[str, Any]:
     return {
-        "supabase_url": SUPABASE_URL,
-        "supabase_anon_key": SUPABASE_ANON_KEY,
         "bot_username": BOT_USERNAME,
         "app_short_name": BOT_APP_SHORT_NAME,
         "dev_auth": DEV_AUTH,
@@ -302,29 +348,10 @@ async def config() -> dict[str, Any]:
 @app.post("/api/session")
 async def session(body: SessionRequest) -> dict[str, Any]:
     telegram_user = verify_init_data(body.init_data)
-    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        raise HTTPException(503, "Supabase public kaliti sozlanmagan")
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            auth_response = await client.get(
-                f"{SUPABASE_URL}/auth/v1/user",
-                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {body.supabase_token}"},
-            )
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, "Supabase Auth bilan ulanishda xato") from exc
-    if auth_response.status_code != 200:
-        raise HTTPException(401, "Supabase sessiyasi yaroqsiz")
-    auth_id = str(auth_response.json()["id"])
     user_id = str(telegram_user["id"])
-    auth_owner = await store.one("profiles", {"auth_id": f"eq.{auth_id}", "select": "telegram_id"})
-    if auth_owner and str(auth_owner["telegram_id"]) != user_id:
-        raise HTTPException(409, "SESSION_CONFLICT")
     profile = await profile_for(user_id)
-    if profile and profile.get("auth_id") != auth_id:
-        rows = await store.call("PATCH", "profiles", params={"telegram_id": f"eq.{user_id}"}, body={"auth_id": auth_id, "updated_at": iso()})
-        profile = rows[0] if rows else profile
     return {
-        "token": make_token(telegram_user, auth_id),
+        "token": make_token(telegram_user),
         "user": telegram_user,
         "profile": profile,
         "registered": bool(profile and profile.get("phone")),
@@ -340,7 +367,6 @@ async def save_profile(body: ProfileRequest, user: dict[str, str] = Depends(curr
     existing = await profile_for(user["id"])
     payload = {
         "telegram_id": int(user["id"]),
-        "auth_id": user["auth_id"],
         "full_name": full_name,
         "phone": phone,
         "updated_at": iso(),
@@ -405,6 +431,7 @@ async def join_game(challenge_code: str, user: dict[str, str] = Depends(current_
     )
     if not rows:
         raise HTTPException(409, "Challenge'ni boshqa o'yinchi qabul qildi")
+    await game_sockets.broadcast(rows[0])
     return {"game": public_game(rows[0], user["id"])}
 
 
@@ -414,6 +441,35 @@ async def get_game(game_id: UUID, user: dict[str, str] = Depends(current_user)) 
     if not game:
         raise HTTPException(404, "O'yin topilmadi")
     return {"game": public_game(game, user["id"])}
+
+
+@app.websocket("/ws/games/{game_id}")
+async def game_websocket(websocket: WebSocket, game_id: UUID) -> None:
+    await websocket.accept()
+    try:
+        auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=8)
+        user = decode_api_token(str(auth_message.get("token", "")))
+        game = await store.one("games", {"id": f"eq.{game_id}", "select": "*"})
+        if not game:
+            await websocket.close(code=4404)
+            return
+        game_for_player(game, user["id"])
+    except Exception:
+        try:
+            await websocket.close(code=4403)
+        except Exception:
+            pass
+        return
+    room_id = str(game_id)
+    await game_sockets.connect(room_id, websocket, user["id"])
+    await websocket.send_json({"game": public_game(game, user["id"])})
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        game_sockets.disconnect(room_id, websocket)
+    except Exception:
+        game_sockets.disconnect(room_id, websocket)
 
 
 def elapsed_ms(game: dict[str, Any]) -> int:
@@ -485,6 +541,7 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
         rows = await store.call("PATCH", "games", params={"id": f"eq.{game_id}", "version": f"eq.{game['version']}"}, body={"status": status, "result_reason": result_reason, "updated_at": iso(), "version": game["version"] + 1})
         if rows:
             await apply_rating(rows[0])
+            await game_sockets.broadcast(rows[0])
         raise HTTPException(409, "Vaqt tugadi")
 
     # Rebuild the complete position so repetition and 50/75-move rules retain history.
@@ -530,6 +587,7 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
         log.exception("Move audit insert failed for %s", game_id)
     if status != "active":
         await apply_rating(updated)
+    await game_sockets.broadcast(updated)
     return {"game": public_game(updated, user["id"]), "move": {"uci": body.uci, "san": san}}
 
 
@@ -583,6 +641,7 @@ async def game_action(game_id: UUID, body: ActionRequest, user: dict[str, str] =
         raise HTTPException(409, "O'yin holati o'zgardi")
     if rows[0]["status"] not in ("waiting", "active"):
         await apply_rating(rows[0])
+    await game_sockets.broadcast(rows[0])
     return {"game": public_game(rows[0], user["id"])}
 
 
@@ -632,6 +691,7 @@ async def configure_telegram_bot() -> None:
         "commands": [
             {"command": "start", "description": "3D shaxmat arenasini ochish"},
             {"command": "play", "description": "O'yinni boshlash"},
+            {"command": "name", "description": "Ismni yangilash"},
             {"command": "privacy", "description": "Maxfiylik siyosati"},
         ]
     })
@@ -661,18 +721,20 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
         if str(contact.get("user_id")) != str(user.get("id")):
             await telegram("sendMessage", {"chat_id": chat_id, "text": "Iltimos, aynan o'zingizning raqamingizni yuboring."})
             return JSONResponse({"ok": True})
-        full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])).strip() or "Chess player"
+        user_key = str(user["id"])
+        full_name = pending_names.pop(user_key, "") or " ".join(filter(None, [user.get("first_name"), user.get("last_name")])).strip() or "Chess player"
+        awaiting_name.discard(user_key)
         payload = {
             "telegram_id": user["id"], "username": user.get("username"), "full_name": full_name,
             "phone": normalize_phone(contact["phone_number"]), "updated_at": iso(),
         }
         try:
             await store.call("POST", "profiles", body=payload, prefer="resolution=merge-duplicates,return=minimal")
-        except HTTPException:
+        except HTTPException as exc:
             log.exception("Contact profile save failed")
             await telegram("sendMessage", {
                 "chat_id": chat_id,
-                "text": "Telefon qabul qilindi, ammo bazaga saqlashda xato bor. Administrator Supabase sozlamalarini tekshirishi kerak.",
+                "text": f"Telefon qabul qilindi, ammo bazaga saqlashda xato bor. {exc.detail}",
             })
             return JSONResponse({"ok": True})
         await telegram("sendMessage", {
@@ -685,14 +747,21 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
         })
     elif str(message.get("text", "")).startswith("/privacy"):
         await telegram("sendMessage", {"chat_id": chat_id, "text": f"Maxfiylik siyosati: {APP_URL}/privacy"})
+    elif str(message.get("text", "")).startswith("/name"):
+        awaiting_name.add(str(user["id"]))
+        await telegram("sendMessage", {
+            "chat_id": chat_id,
+            "text": "Ism va familiyangizni yozing:",
+            "reply_markup": {"force_reply": True, "input_field_placeholder": "Masalan: Aziz Karimov"},
+        })
     elif str(message.get("text", "")).startswith(("/start", "/play")):
         try:
             existing = await profile_for(str(user["id"]))
-        except HTTPException:
+        except HTTPException as exc:
             log.exception("Profile lookup failed during Telegram onboarding")
             await telegram("sendMessage", {
                 "chat_id": chat_id,
-                "text": "Bot ishga tushdi, ammo ma'lumotlar bazasiga ulanishda xato bor. Administrator Render'dagi Supabase kalitlarini tekshirishi kerak.",
+                "text": f"Bot ishga tushdi, ammo baza tayyor emas. {exc.detail}",
             })
             return JSONResponse({"ok": True})
         if existing:
@@ -701,9 +770,23 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
                 "reply_markup": {"inline_keyboard": [[{"text": "♟ 3D SHAXMAT", "web_app": {"url": APP_URL}}]]},
             })
         else:
+            awaiting_name.add(str(user["id"]))
             await telegram("sendMessage", {
                 "chat_id": chat_id,
-                "text": "ZAMIN 3D CHESS'ga xush kelibsiz! Davom etish uchun ismingiz Telegram profilingizdan olinadi va telefon raqamingizni tasdiqlashingiz kerak.",
+                "text": "ZAMIN 3D CHESS'ga xush kelibsiz! Avval ism va familiyangizni yozing:",
+                "reply_markup": {"force_reply": True, "input_field_placeholder": "Masalan: Aziz Karimov"},
+            })
+    elif str(user["id"]) in awaiting_name and message.get("text"):
+        full_name = " ".join(str(message["text"]).split())
+        if len(full_name) < 2 or len(full_name) > 80:
+            await telegram("sendMessage", {"chat_id": chat_id, "text": "Ism 2–80 ta belgidan iborat bo‘lishi kerak. Qayta yozing:"})
+        else:
+            user_key = str(user["id"])
+            pending_names[user_key] = full_name
+            awaiting_name.discard(user_key)
+            await telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": f"Rahmat, {full_name}. Endi telefon raqamingizni tasdiqlang:",
                 "reply_markup": {"keyboard": [[{"text": "📱 Raqamimni tasdiqlash", "request_contact": True}]], "resize_keyboard": True, "one_time_keyboard": True},
             })
     return JSONResponse({"ok": True})
