@@ -6,13 +6,16 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const tg = window.Telegram?.WebApp;
+const SESSION_STORAGE_KEY='zamin-session-v1',ACTIVE_GAME_KEY='zamin-active-game-v1';
+const storedValue=key=>{try{return localStorage.getItem(key)||''}catch{return ''}};
+const storeValue=(key,value)=>{try{if(value)localStorage.setItem(key,value);else localStorage.removeItem(key)}catch{}};
 let savedBoardMode='3d';try{savedBoardMode=localStorage.getItem('zamin-board-mode')||'3d'}catch{}
 const state = {
   config: null, token: '', user: null, profile: null, game: null,
   socket: null, socketPing: null, board: null, board3d: null, board2d: null, heroArena: null, boardMode: savedBoardMode==='2d'?'2d':'3d', chess: new Chess(),
   selected: null, legal: [], sound: true, mode: 'friend', aiLevel: 2,
   time: 600, increment: 3, variant: 'standard', shareUrl: '', moving: false, aiThinking: false, timeoutClaimed: false, pendingChallenge: '', realtimeLive: false,
-  premove: null, selectionMode: 'move', spectator: false, replaying: false, historyPly: null, resultSynced: false, theme: 'registan', performanceMode: 'auto', presence: {players:0,spectators:0}, puzzle: null, puzzleStartedAt: 0,
+  premove: null, selectionMode: 'move', spectator: false, replaying: false, historyPly: null, resultSynced: false, resultPresented: false, theme: 'registan', performanceMode: 'auto', presence: {players:0,spectators:0}, puzzle: null, puzzleStartedAt: 0,
 };
 
 const PUZZLES=[
@@ -88,12 +91,13 @@ class AudioForge {
     for(let i=0;i<length;i++)data[i]=(Math.random()*2-1)*Math.pow(1-i/length,2);
     const source=this.ctx.createBufferSource(),filter=this.ctx.createBiquadFilter(),gain=this.ctx.createGain();source.buffer=buffer;filter.type='highpass';filter.frequency.value=highpass;gain.gain.setValueAtTime(volume,t);gain.gain.exponentialRampToValueAtTime(.001,t+duration);source.connect(filter).connect(gain).connect(this.master);source.start(t);
   }
-  move() { this.tone(118,.11,'sine',.085,-28);this.tone(238,.07,'triangle',.035,-75,.025);this.noise(.055,.018,260,.015); }
-  capture() { this.tone(82,.28,'sine',.11,-42);this.tone(1180,.34,'triangle',.035,-730,.025,.42);this.tone(1760,.19,'sine',.018,-950,.06,.5);this.noise(.2,.065,700,.018); }
-  check() { this.tone(660,.42,'sine',.055,95,0,.48);this.tone(990,.34,'sine',.026,-40,.06,.55); }
-  draw() { this.tone(310,.3,'triangle',.045,-35);this.tone(265,.4,'sine',.035,-20,.12,.4); }
-  defeat() { [220,185,147].forEach((n,i)=>this.tone(n,.42,'triangle',.05,-35,i*.14,.3)); }
-  victory() { [392,494,587,784].forEach((n,i)=>this.tone(n,.5,'sine',.052,35,i*.11,.38)); }
+  woodKnock(delay=0,strength=1){this.tone(178,.055,'triangle',.075*strength,-105,delay,.015);this.tone(92,.082,'sine',.062*strength,-34,delay+.007,.01);this.noise(.032,.018*strength,760,delay+.004)}
+  move() { this.woodKnock(0,.88); }
+  capture() { this.woodKnock(0,.72);this.woodKnock(.075,1.08); }
+  check() { this.tone(510,.09,'triangle',.032,-145,.035,.06);this.noise(.025,.012,1200,.04); }
+  draw() { this.woodKnock(0,.62);this.woodKnock(.13,.62); }
+  defeat() { this.woodKnock(0,.85);this.tone(105,.18,'sine',.04,-38,.1,.04); }
+  victory() { this.woodKnock(0,.7);this.woodKnock(.11,.82);this.woodKnock(.22,1); }
 }
 const audio = new AudioForge();
 
@@ -108,7 +112,7 @@ class ChessArena3D {
     const pixelCap=state.performanceMode==='battery'?1:state.performanceMode==='quality'?2:hero?1.35:innerWidth<700?1.4:1.8;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,pixelCap));
     this.renderer.shadowMap.enabled=state.performanceMode!=='battery';this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.12;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.32;
     container.append(this.renderer.domElement);
     this.root = new THREE.Group(); this.scene.add(this.root);
     this.pieces = new Map(); this.squares = []; this.markers = [];this.positionMarkers=[];
@@ -129,14 +133,15 @@ class ChessArena3D {
     this.clock = new THREE.Clock(); this.loop();
   }
   buildLights() {
-    this.scene.add(new THREE.HemisphereLight(0xd9f7ff,0x211208,1.55));
-    const key=new THREE.SpotLight(0xffdfa2,105,32,.55,.72);key.position.set(-5,10,6);key.castShadow=true;key.shadow.mapSize.set(this.hero?512:1024,this.hero?512:1024);key.shadow.bias=-.00025;this.scene.add(key);
-    const cool=new THREE.SpotLight(0x68dce8,72,28,.65,.8);cool.position.set(6,7,-6);this.scene.add(cool);
-    const rim=new THREE.PointLight(0xff934f,24,18);rim.position.set(-6,2,-3);this.scene.add(rim);
+    this.scene.add(new THREE.HemisphereLight(0xffffff,0x73919c,2.65));
+    const key=new THREE.SpotLight(0xfff1d2,148,34,.58,.68);key.position.set(-5,11,6);key.castShadow=true;key.shadow.mapSize.set(this.hero?512:1024,this.hero?512:1024);key.shadow.bias=-.00025;this.scene.add(key);
+    const cool=new THREE.SpotLight(0xc9f9ff,126,30,.7,.72);cool.position.set(6,8,-5);this.scene.add(cool);
+    const front=new THREE.DirectionalLight(0xffffff,2.35);front.position.set(0,5,8);this.scene.add(front);
+    const rim=new THREE.PointLight(0xffa65e,42,20);rim.position.set(-6,3,-3);this.scene.add(rim);
   }
   buildBoard() {
-    const palettes={registan:[0xe0cfb3,0x315463,0xbd7d36],cyber:[0xbedbd8,0x174d4c,0xe45bd6],ice:[0xe8f4f5,0x4c7896,0x8ecbff],volcano:[0xe4c09b,0x69382d,0xff6b35]},palette=palettes[state.theme]||palettes.registan;
-    const baseMat=new THREE.MeshPhysicalMaterial({color:0x111a22,roughness:.23,metalness:.72,clearcoat:.72});
+    const palettes={registan:[0xffefd2,0x82a6ae,0xd18c3b],cyber:[0xe5fff9,0x63aaa5,0xee6be6],ice:[0xf7ffff,0x91bbcf,0x9bd8ff],volcano:[0xffe1bd,0xc38b76,0xff7540]},palette=palettes[state.theme]||palettes.registan;
+    const baseMat=new THREE.MeshPhysicalMaterial({color:0x526f79,roughness:.3,metalness:.5,clearcoat:.72});
     const base=new THREE.Mesh(new THREE.BoxGeometry(9.45,.38,9.45),baseMat);base.position.y=-.28;base.receiveShadow=true;this.root.add(base);
     const rim=new THREE.Mesh(new THREE.BoxGeometry(8.72,.16,8.72),new THREE.MeshStandardMaterial({color:palette[2],metalness:.78,roughness:.28}));rim.position.y=-.035;this.root.add(rim);
     const light=new THREE.MeshPhysicalMaterial({color:palette[0],roughness:.42,metalness:.04,clearcoat:.28});
@@ -147,12 +152,12 @@ class ChessArena3D {
       mesh.position.set(f-3.5,.065,3.5-r);mesh.receiveShadow=true;mesh.userData.square=square;
       this.root.add(mesh); this.squares.push(mesh);
     }
-    const floor=new THREE.Mesh(new THREE.CircleGeometry(12,64),new THREE.MeshStandardMaterial({color:0x061017,transparent:true,opacity:.78,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.y=-.49;floor.receiveShadow=true;this.scene.add(floor);
+    const floor=new THREE.Mesh(new THREE.CircleGeometry(12,64),new THREE.MeshStandardMaterial({color:0x71909a,transparent:true,opacity:.96,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.y=-.49;floor.receiveShadow=true;this.scene.add(floor);
   }
   material(color) {
     return color==='w'
       ? new THREE.MeshPhysicalMaterial({color:0xf1e5ce,roughness:.22,metalness:.08,clearcoat:1,clearcoatRoughness:.11})
-      : new THREE.MeshPhysicalMaterial({color:0x263b49,roughness:.18,metalness:.62,clearcoat:.9,clearcoatRoughness:.13});
+      : new THREE.MeshPhysicalMaterial({color:0x101820,emissive:0x3a6275,emissiveIntensity:.62,roughness:.24,metalness:.34,clearcoat:1,clearcoatRoughness:.08});
   }
   accent(color='w') { return new THREE.MeshStandardMaterial({color:color==='w'?0xe7a943:0xe66d42,metalness:.9,roughness:.18}); }
   gold() { return this.accent('w'); }
@@ -253,6 +258,13 @@ class ChessArena3D {
     await new Promise(resolve=>{const tick=(time)=>{const p=Math.min(1,(time-t0)/duration),ease=1-Math.pow(1-p,3);mover.position.lerpVectors(start,end,ease);mover.position.y=.14+Math.sin(p*Math.PI)*(captured ? .34 : .16);if(weapon)weapon.rotation.z=-1.5+p*3.1;if(victim&&p>.42){const q=(p-.42)/.58;victim.rotation.z=q*1.3;victim.scale.setScalar(Math.max(.05,1-q*.95));victim.position.y=.14-q*.45}p<1?requestAnimationFrame(tick):resolve()};requestAnimationFrame(tick)});
     if(weapon)mover.remove(weapon);
   }
+  finishEffect(kind,loserColor=''){
+    const loser=[...this.pieces.values()].find(piece=>piece.userData.type==='k'&&piece.userData.color===loserColor);
+    if(!loser||kind==='draw')return;
+    const start=performance.now(),direction=loserColor==='w'?-1:1,baseScale=loser.scale.x;
+    const animate=time=>{const p=Math.min(1,(time-start)/620),ease=1-Math.pow(1-p,3);loser.rotation.z=direction*1.18*ease;loser.position.y=.14-.12*ease;loser.scale.setScalar(baseScale*(1-.07*ease));if(p<1)requestAnimationFrame(animate)};
+    requestAnimationFrame(animate);
+  }
   resize(){const w=this.container.clientWidth,h=this.container.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h,false);this.camera.aspect=w/h;this.camera.updateProjectionMatrix();if(!this.hero)this.orient(this.viewColor||'white')}
   dispose(){this.disposed=true;this.active=false;this.resizeObserver?.disconnect();this.controls?.dispose();this.release(this.scene);this.renderer.dispose();this.renderer.domElement.remove()}
   loop(){if(this.disposed)return;requestAnimationFrame(()=>this.loop());if(!this.active)return;this.controls.update();if(this.hero)this.root.position.y=Math.sin(performance.now()/900)*.04;this.renderer.render(this.scene,this.camera)}
@@ -260,7 +272,7 @@ class ChessArena3D {
 
 class ChessBoard2D {
   constructor(container){
-    this.container=container;this.element=$('#board-2d',container);this.fen=new Chess().fen();this.viewColor='white';this.selected=null;this.destinations=[];this.lastMove='';this.checkSquare='';
+    this.container=container;this.element=$('#board-2d',container);this.fen=new Chess().fen();this.viewColor='white';this.selected=null;this.destinations=[];this.lastMove='';this.checkSquare='';this.resultEffect=null;
     this.element.addEventListener('click',event=>{const square=event.target.closest('.square-2d');if(square)onSquare(square.dataset.square)});
   }
   orient(color='white'){this.viewColor=color;this.render()}
@@ -270,7 +282,7 @@ class ChessBoard2D {
   render(){
     const chess=new Chess(this.fen),files=this.viewColor==='black'?[...'hgfedcba']:[...'abcdefgh'],ranks=this.viewColor==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
     const glyph={wp:'♟',wn:'♞',wb:'♝',wr:'♜',wq:'♛',wk:'♚',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};let html='';
-    for(const rank of ranks)for(const file of files){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1,isEdgeFile=file===files[0],isEdgeRank=rank===ranks.at(-1),classes=['square-2d',dark?'dark':'light'];if(this.lastMove&&square===this.lastMove.slice(0,2))classes.push('last-from');if(this.lastMove&&square===this.lastMove.slice(2,4))classes.push('last-to');if(square===this.checkSquare)classes.push('in-check');if(square===this.selected)classes.push('selected');if(this.destinations.includes(square))classes.push(piece?'capture':'legal');html+=`<button type="button" class="${classes.join(' ')}" data-square="${square}" aria-label="${square}">${piece?`<span class="piece-2d ${piece.color==='w'?'white':'black'}">${glyph[piece.color+piece.type]}</span>`:''}${isEdgeFile?`<small class="coord-2d coord-rank">${rank}</small>`:''}${isEdgeRank?`<small class="coord-2d coord-file">${file}</small>`:''}</button>`}
+    for(const rank of ranks)for(const file of files){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1,isEdgeFile=file===files[0],isEdgeRank=rank===ranks.at(-1),classes=['square-2d',dark?'dark':'light'];if(this.lastMove&&square===this.lastMove.slice(0,2))classes.push('last-from');if(this.lastMove&&square===this.lastMove.slice(2,4))classes.push('last-to');if(square===this.checkSquare)classes.push('in-check');if(square===this.selected)classes.push('selected');if(this.destinations.includes(square))classes.push(piece?'capture':'legal');const fallen=piece?.type==='k'&&piece.color===this.resultEffect?.loserColor;html+=`<button type="button" class="${classes.join(' ')}" data-square="${square}" aria-label="${square}">${piece?`<span class="piece-2d ${piece.color==='w'?'white':'black'}${fallen?' result-loser':''}">${glyph[piece.color+piece.type]}</span>`:''}${isEdgeFile?`<small class="coord-2d coord-rank">${rank}</small>`:''}${isEdgeRank?`<small class="coord-2d coord-file">${file}</small>`:''}</button>`}
     this.element.innerHTML=html;
   }
   showMoves(selected,destinations=[]){this.selected=selected;this.destinations=destinations;this.render()}
@@ -280,6 +292,7 @@ class ChessBoard2D {
     const a=piece.getBoundingClientRect(),b=to.getBoundingClientRect(),clone=piece.cloneNode(true);clone.classList.add('floating-piece-2d');clone.style.left=`${a.left}px`;clone.style.top=`${a.top}px`;clone.style.width=`${a.width}px`;clone.style.height=`${a.height}px`;document.body.append(clone);piece.style.visibility='hidden';
     requestAnimationFrame(()=>clone.style.transform=`translate(${b.left-a.left+(b.width-a.width)/2}px,${b.top-a.top+(b.height-a.height)/2}px)`);await sleep(82);clone.remove();piece.style.visibility='';
   }
+  finishEffect(kind,loserColor=''){this.resultEffect={kind,loserColor};this.render()}
 }
 
 function checkedKingSquare(chess){
@@ -322,6 +335,7 @@ function setBoardMode(mode,{render=true,notify=false}={}){
   else{state.board3d||=new ChessArena3D(stage);state.board3d.active=true;state.board=state.board3d}
   state.board.orient(state.game.my_color);state.selected=null;state.legal=[];
   if(state.historyPly===null){state.board.load(state.game.fen);showPositionHighlights(state.chess,state.game.move_history?.at(-1)?.uci||'')}else renderHistoryPosition();
+  if(!['waiting','active'].includes(state.game.status)&&state.resultPresented)applyBoardResultEffect(state.game);
   if(notify)toast(`${mode.toUpperCase()} ko‘rinish yoqildi`,'good');
 }
 
@@ -343,14 +357,18 @@ async function initialize() {
     }
     const launchTicket=launchQuery.get('ticket')||launchFragment.get('ticket')||'';
     const fragmentStartParam=launchQuery.get('startapp')||launchFragment.get('startapp')||'';
-    const session=await api('/api/session',{method:'POST',body:JSON.stringify({
-      init_data:telegramInitData,
-      launch_ticket:launchTicket,
-    })});
+    let session=null;
+    if(!telegramInitData&&!launchTicket&&storedValue(SESSION_STORAGE_KEY)){
+      state.token=storedValue(SESSION_STORAGE_KEY);
+      try{session=await api('/api/session/restore')}catch{state.token='';storeValue(SESSION_STORAGE_KEY,'')}
+    }
+    if(!session){
+      state.token='';session=await api('/api/session',{method:'POST',body:JSON.stringify({init_data:telegramInitData,launch_ticket:launchTicket})});
+    }
     // Remove the short-lived credential from the address after it is accepted.
     // The longer API session token remains only in this page's memory.
     if(launchTicket) history.replaceState(null,'',location.pathname);
-    Object.assign(state,{token:session.token,user:session.user,profile:session.profile});
+    Object.assign(state,{token:session.token||state.token,user:session.user,profile:session.profile});storeValue(SESSION_STORAGE_KEY,state.token);
     state.theme=session.profile?.equipped_theme||'registan';state.performanceMode=session.profile?.performance_mode||'auto';applyAppearance();renderProfile(); startHero(); bindUI(); setBoardMode(state.boardMode,{render:false});
     $('#app').classList.remove('hidden'); await sleep(350); $('#boot').classList.add('out'); setTimeout(()=>$('#boot').remove(),700);
     if(!session.registered) openModal('#onboarding'); else await loadRecent();
@@ -358,7 +376,7 @@ async function initialize() {
     if(startParam?.startsWith('join_')) {
       if(session.registered) await joinChallenge(startParam.slice(5));
       else state.pendingChallenge=startParam.slice(5);
-    }
+    }else if(session.registered)await restoreActiveGame();
   } catch(error) {
     $('#boot').classList.add('out'); $('#app').classList.remove('hidden');
     setTimeout(()=>$('#boot')?.remove(),500); toast(error.message,'error');
@@ -381,7 +399,7 @@ function bindUI() {
   $('#join-form').onsubmit=e=>{e.preventDefault();joinChallenge($('#join-code').value)};
   $('#refresh-games').onclick=loadRecent;
   $('#share-challenge').onclick=shareChallenge; $('#copy-challenge').onclick=copyChallenge;
-  $('#leave-game').onclick=leaveGame; $('#result-home').onclick=()=>{closeModal($('#result-home'));leaveGame()};
+  $('#leave-game').onclick=leaveGame;$('#result-home').onclick=leaveGame;$('#result-dismiss').onclick=()=>$('#result-modal').classList.add('hidden');
   $('#mode-toggle').onclick=()=>setBoardMode(state.boardMode==='2d'?'3d':'2d',{render:true,notify:true});
   $('#view-toggle').onclick=()=>state.board?.orient(state.board.viewColor==='white'?'black':'white');
   $('#panel-toggle').onclick=()=>$('.game-panel').classList.toggle('open');
@@ -454,8 +472,14 @@ function showNewGame(mode){state.mode=mode;$('#new-game-title').textContent=mode
 
 async function createGame(){
   const btn=$('#create-game');setLoading(btn,true);
-  try{const data=await api('/api/games',{method:'POST',body:JSON.stringify({mode:state.mode,variant:state.variant,time_control:state.time,increment:state.increment,ai_level:state.aiLevel})});closeModal(btn);state.shareUrl=data.share_url;if(state.mode==='friend'){state.game=data.game;$('#challenge-code').textContent=data.game.code;openModal('#challenge-modal');await subscribe(data.game.id)}else await enterGame(data.game)}
+  try{const data=await api('/api/games',{method:'POST',body:JSON.stringify({mode:state.mode,variant:state.variant,time_control:state.time,increment:state.increment,ai_level:state.aiLevel})});closeModal(btn);state.shareUrl=data.share_url;storeValue(ACTIVE_GAME_KEY,data.game.id);if(state.mode==='friend'){state.game=data.game;$('#challenge-code').textContent=data.game.code;openModal('#challenge-modal');await subscribe(data.game.id)}else await enterGame(data.game)}
   catch(e){toast(e.message,'error')}finally{setLoading(btn,false)}
+}
+
+function challengeUrl(code){return state.config?.bot_username?`https://t.me/${state.config.bot_username}?start=join_${code}`:`${location.origin}/?startapp=join_${code}`}
+async function restoreActiveGame(){
+  const gameId=storedValue(ACTIVE_GAME_KEY);if(!gameId||state.game)return;
+  try{const data=await api(`/api/games/${gameId}`),game=data.game;if(!['waiting','active'].includes(game.status)){storeValue(ACTIVE_GAME_KEY,'');return}if(game.status==='waiting'){state.game=game;state.shareUrl=challengeUrl(game.code);$('#challenge-code').textContent=game.code;openModal('#challenge-modal');await subscribe(game.id)}else await enterGame(game)}catch{storeValue(ACTIVE_GAME_KEY,'')}
 }
 
 async function joinChallenge(raw){
@@ -466,7 +490,9 @@ async function joinChallenge(raw){
 function shareChallenge(){
   const text=`⚔️ Men sizni ZAMIN 3D Chess jangiga chorlayman!\n\nChallenge kodi: ${state.game?.code}\nTaxtada ko‘rishamiz.`;
   const url=`https://t.me/share/url?url=${encodeURIComponent(state.shareUrl)}&text=${encodeURIComponent(text)}`;
-  if(tg?.openTelegramLink)tg.openTelegramLink(url);else window.open(url,'_blank');
+  storeValue(ACTIVE_GAME_KEY,state.game?.id||'');navigator.clipboard?.writeText(state.shareUrl).catch(()=>{});toast('Jang saqlandi — qaytganingizda shu taxta ochiladi','good');
+  if(navigator.share)navigator.share({title:'ZAMIN Chess challenge',text,url:state.shareUrl}).catch(()=>tg?.openTelegramLink?tg.openTelegramLink(url):window.open(url,'_blank'));
+  else if(tg?.openTelegramLink)tg.openTelegramLink(url);else window.open(url,'_blank');
 }
 async function copyChallenge(){try{await navigator.clipboard.writeText(state.shareUrl);toast('Havola nusxalandi','good')}catch{toast(state.shareUrl)}}
 
@@ -482,10 +508,13 @@ async function subscribe(gameId){
 }
 
 async function enterGame(game){
-  state.game=game;state.chess=new Chess(game.fen);state.selected=null;state.premove=null;state.replaying=false;state.historyPly=null;state.resultSynced=false;state.timeoutClaimed=false;
+  state.game=game;state.chess=new Chess(game.fen);state.selected=null;state.premove=null;state.replaying=false;state.historyPly=null;state.resultSynced=false;state.resultPresented=false;state.timeoutClaimed=false;
+  if(state.board2d)state.board2d.resultEffect=null;
+  if(['waiting','active'].includes(game.status))storeValue(ACTIVE_GAME_KEY,game.id);else storeValue(ACTIVE_GAME_KEY,'');
   if(state.heroArena)state.heroArena.active=false;
   $('.game-panel').classList.remove('open');
   $('#lobby').classList.add('hidden');$('#game').classList.remove('hidden');$('#game-code').textContent=game.code;
+  $('#result-modal').classList.add('hidden');$('#board-stage').classList.remove('result-win','result-loss','result-draw');
   $('#premove-banner').classList.add('hidden');$('#reconnect-banner').classList.add('hidden');
   $('#spectator-banner').classList.toggle('hidden',!state.spectator);$$('[data-action],#rematch-game').forEach(button=>button.disabled=state.spectator);
   $('.player-strip.opponent small').textContent=state.spectator?'QORA':'RAQIB';$('.player-strip.self small').textContent=state.spectator?'OQ':'SIZ';
@@ -517,7 +546,8 @@ function renderGame(){
   const offer=g.draw_offer_by&&g.draw_offer_by!==String(state.user.id);$('#draw-offer').classList.toggle('hidden',!offer);
   $$('[data-action="offer_draw"],[data-action="resign"]').forEach(button=>button.disabled=state.spectator||g.status!=='active');
   if(!state.spectator&&!['waiting','active'].includes(g.status)&&!state.resultSynced){state.resultSynced=true;loadRecent()}
-  if(!['waiting','active'].includes(g.status)&&!state.replaying&&!$('#result-modal:not(.hidden)')&&!$('#review-modal:not(.hidden)'))showResult(g);
+  if(!['waiting','active'].includes(g.status))storeValue(ACTIVE_GAME_KEY,'');
+  if(!['waiting','active'].includes(g.status)&&!state.replaying&&!state.resultPresented&&!$('#review-modal:not(.hidden)'))showResult(g);
   renderHistoryControls();
 }
 
@@ -591,7 +621,9 @@ async function gameAction(action){
 }
 function variantLabel(variant){return({standard:'Klassik',kingofthehill:'Taxt uchun jang',threecheck:'Uch karra shax'})[variant]||variant||'Klassik'}
 function reasonLabel(reason){return({checkmate:'Shox mot',kingofthehill:'Shoh markaziy taxtni egalladi',threecheck:'Uchinchi shax berildi',stalemate:'Pat',insufficient_material:'Donalar yetarli emas',seventyfive_moves:'75 yurish qoidasi',fivefold_repetition:'Besh karra takrorlanish',threefold_repetition:'Uch karra takrorlanish',fifty_moves:'50 yurish qoidasi',timeout:'Vaqt tugadi',timeout_insufficient_material:'Vaqt tugadi, ammo mot uchun dona yetarli emas',resignation:'Taslim bo‘lish',agreement:'Kelishilgan durang',aborted:'Bekor qilindi'})[reason]||reason||'O‘yin yakuni'}
-function showResult(g){const mine=g.my_color,status=g.status,won=status===`${mine}_won`,draw=status==='draw';$('#result-icon').textContent=won?'♛':draw?'½':'♟';$('#result-title').textContent=state.spectator?(status==='white_won'?'OQLAR G‘ALABA':status==='black_won'?'QORALAR G‘ALABA':status==='aborted'?'BEKOR QILINDI':'DURANG'):won?'G‘ALABA':draw?'DURANG':'MAG‘LUBIYAT';$('#result-reason').textContent=reasonLabel(g.result_reason);openModal('#result-modal');if(state.spectator||draw)audio.draw();else if(won)audio.victory();else audio.defeat()}
+function resultState(g){const status=g.status,mine=g.my_color,draw=status==='draw'||status==='aborted',won=!state.spectator&&status===`${mine}_won`,kind=draw?'draw':won?'win':'loss',loserColor=status==='white_won'?'b':status==='black_won'?'w':'';return {status,mine,draw,won,kind,loserColor}}
+function applyBoardResultEffect(g){const result=resultState(g),stage=$('#board-stage');stage.classList.remove('result-win','result-loss','result-draw');stage.classList.add(`result-${result.kind}`);state.board?.finishEffect?.(result.kind,result.loserColor)}
+function showResult(g){const result=resultState(g),{status,won,draw,kind}=result;state.resultPresented=true;$('#result-icon').textContent=won?'♛':draw?'½':'♟';$('#result-title').textContent=state.spectator?(status==='white_won'?'OQLAR G‘ALABA':status==='black_won'?'QORALAR G‘ALABA':status==='aborted'?'BEKOR QILINDI':'DURANG'):won?'G‘ALABA':draw?'DURANG':'MAG‘LUBIYAT';$('#result-reason').textContent=reasonLabel(g.result_reason);applyBoardResultEffect(g);openModal('#result-modal');if(state.spectator||draw)audio.draw();else if(won)audio.victory();else audio.defeat();tg?.HapticFeedback?.notificationOccurred?.(kind==='win'?'success':kind==='loss'?'error':'warning')}
 
 function moveObject(uci){return {from:uci.slice(0,2),to:uci.slice(2,4),...(uci[4]?{promotion:uci[4]}:{})}}
 function classifyLoss(loss){
@@ -637,7 +669,7 @@ async function playCinematicReplay(){
 async function createRematch(){
   if(!state.game||state.spectator)return;
   const button=$('#rematch-game');setLoading(button,true,'TAYYORLANMOQDA...');
-  try{const data=await api(`/api/games/${state.game.id}/rematch`,{method:'POST',body:'{}'});closeModal(button);toast('Revansh boshlandi','good');await enterGame(data.game)}catch(e){toast(e.message,'error')}finally{setLoading(button,false)}
+  try{const data=await api(`/api/games/${state.game.id}/rematch`,{method:'POST',body:'{}'});$('#result-modal').classList.add('hidden');toast('Revansh boshlandi','good');await enterGame(data.game)}catch(e){toast(e.message,'error')}finally{setLoading(button,false)}
 }
 function shareSpectator(){
   if(!state.game)return;const watchUrl=`${location.origin}/?watch=${encodeURIComponent(state.game.code)}`,text=`◉ ZAMIN Chess jangini jonli tomosha qiling: ${state.game.white_name||'Oq'} — ${state.game.black_name||'Qora'}`,telegramUrl=`https://t.me/share/url?url=${encodeURIComponent(watchUrl)}&text=${encodeURIComponent(text)}`;
@@ -645,9 +677,9 @@ function shareSpectator(){
 }
 
 async function leaveGame(){
-  if(state.socketPing){clearInterval(state.socketPing);state.socketPing=null}if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null}state.realtimeLive=false;state.replaying=false;state.historyPly=null;state.game=null;if(state.board3d)state.board3d.active=false;
+  storeValue(ACTIVE_GAME_KEY,'');if(state.socketPing){clearInterval(state.socketPing);state.socketPing=null}if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null}state.realtimeLive=false;state.replaying=false;state.historyPly=null;state.game=null;if(state.board3d)state.board3d.active=false;
   if(state.spectator){tg?.close?.();if(!tg)setTimeout(()=>{location.href='/'},50);return}
-  if(state.heroArena)state.heroArena.active=true;$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');await loadRecent();
+  if(state.heroArena)state.heroArena.active=true;$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');$('#board-stage').classList.remove('result-win','result-loss','result-draw');await loadRecent();
 }
 async function loadRecent(){
   if(!state.token)return;try{const data=await api('/api/me/games'),list=$('#recent-list');if(data.profile){state.profile=data.profile;renderProfile()}if(!data.games.length){list.innerHTML='<div class="empty-state"><span>♟</span><p>Hali janglar yo‘q.<br>Birinchi yurishni siz boshlang.</p></div>';return}list.innerHTML=data.games.map(g=>{const mine=g.my_color,won=g.status===`${mine}_won`,lost=g.status===`${mine==='white'?'black':'white'}_won`,label=g.status==='active'?'DAVOM ETADI':g.status==='waiting'?'KUTILMOQDA':g.status==='aborted'?'BEKOR':won?'G‘ALABA':lost?'MAG‘LUBIYAT':'DURANG';return `<div class="recent-item" data-game="${g.id}"><span class="recent-icon">${g.mode==='ai'?'◈':'⚔'}</span><span><b>${escapeHtml(mine==='white'?(g.black_name||'Challenge'):(g.white_name||'Raqib'))}</b><small>${g.move_history?.length||0} YURISH · ${g.time_control/60} MIN</small></span><em class="status-tag ${won?'win':lost?'loss':''}">${label}</em></div>`}).join('');$$('[data-game]',list).forEach(el=>el.onclick=async()=>{try{const d=await api(`/api/games/${el.dataset.game}`);await enterGame(d.game)}catch(e){toast(e.message,'error')}})}catch(e){toast(e.message,'error')}
