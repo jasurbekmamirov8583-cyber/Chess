@@ -437,7 +437,8 @@ async def my_games(user: dict[str, str] = Depends(current_user)) -> dict[str, An
             "order": "updated_at.desc", "limit": "20", "select": "*"
         },
     )
-    return {"profile": profile, "games": [public_game(row, uid) for row in rows]}
+    settled = [await settle_timeout(row) for row in rows]
+    return {"profile": profile, "games": [public_game(row, uid) for row in settled]}
 
 
 @app.post("/api/games")
@@ -490,6 +491,7 @@ async def get_game(game_id: UUID, user: dict[str, str] = Depends(current_user)) 
     game = await store.one("games", {"id": f"eq.{game_id}", "select": "*"})
     if not game:
         raise HTTPException(404, "O'yin topilmadi")
+    game = await settle_timeout(game)
     return {"game": public_game(game, user["id"])}
 
 
@@ -563,6 +565,59 @@ async def apply_rating(game: dict[str, Any]) -> None:
     await store.call("PATCH", "games", params={"id": f"eq.{game['id']}"}, body={"rating_applied": True})
 
 
+async def settle_timeout(game: dict[str, Any]) -> dict[str, Any]:
+    """Persist a clock loss without trusting a browser to report it."""
+    if game.get("status") != "active" or not game.get("last_move_at"):
+        return game
+    timed_out = game["turn"]
+    remaining_key = "white_ms" if timed_out == "white" else "black_ms"
+    if int(game[remaining_key]) - elapsed_ms(game) > 0:
+        return game
+    winner = "black" if timed_out == "white" else "white"
+    board = board_from_history(game)
+    winner_color = chess.WHITE if winner == "white" else chess.BLACK
+    if board.has_insufficient_material(winner_color):
+        status, reason = "draw", "timeout_insufficient_material"
+    else:
+        status, reason = f"{winner}_won", "timeout"
+    rows = await store.call(
+        "PATCH", "games",
+        params={"id": f"eq.{game['id']}", "version": f"eq.{game['version']}", "status": "eq.active"},
+        body={"status": status, "result_reason": reason, "updated_at": iso(), "version": game["version"] + 1},
+    )
+    if not rows:
+        return await store.one("games", {"id": f"eq.{game['id']}", "select": "*"}) or game
+    updated = rows[0]
+    await apply_rating(updated)
+    await game_sockets.broadcast(updated)
+    return updated
+
+
+async def active_game_clock_worker() -> None:
+    """Watch only games with connected players, keeping free-tier load tiny."""
+    while True:
+        await asyncio.sleep(12)
+        for game_id in list(game_sockets.rooms):
+            try:
+                game = await store.one("games", {"id": f"eq.{game_id}", "select": "*"})
+                if game:
+                    await settle_timeout(game)
+            except Exception:
+                log.exception("Clock worker failed for game %s", game_id)
+
+
+@app.on_event("startup")
+async def start_game_clock_worker() -> None:
+    app.state.game_clock_task = asyncio.create_task(active_game_clock_worker())
+
+
+@app.on_event("shutdown")
+async def stop_game_clock_worker() -> None:
+    task = getattr(app.state, "game_clock_task", None)
+    if task:
+        task.cancel()
+
+
 @app.post("/api/games/{game_id}/move")
 async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
     game = await store.one("games", {"id": f"eq.{game_id}", "select": "*"})
@@ -617,6 +672,10 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
         status, reason = "draw", "seventyfive_moves"
     elif board.is_fivefold_repetition():
         status, reason = "draw", "fivefold_repetition"
+    elif board.halfmove_clock >= 100:
+        status, reason = "draw", "fifty_moves"
+    elif board.is_repetition(3):
+        status, reason = "draw", "threefold_repetition"
     payload = {
         "fen": board.fen(), "move_history": history, "status": status, "result_reason": reason,
         "turn": "black" if color == "white" else "white", "draw_offer_by": None,

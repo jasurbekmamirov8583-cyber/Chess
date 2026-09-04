@@ -7,11 +7,13 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - To‘liq legal yurishlar: rokировка, en passant, promotion (queen/rook/bishop/knight), shax va mot.
 - Pat, yetarli bo‘lmagan material, 3/5 karra takrorlanish, 50/75 yurish qoidalari.
 - Server-authoritative yurish tekshiruvi (`python-chess`) va versiya orqali parallel yurishdan himoya.
-- 3D kamera, yoritish, soyalar, legal katak indikatorlari va urib olishda qilich/bolg‘a animatsiyasi.
+- Har biri keskin farqlanadigan procedural Staunton 3D donalari, mobilga mos avtomatik kamera, yoritish, soyalar va legal katak indikatorlari.
+- Urib olishda qurol, sakrash va yiqilish animatsiyasi; yurish, zarba, shax, g‘alaba, mag‘lubiyat va durang uchun qatlamli Web Audio tovushlari.
 - 4 darajali brauzer AI. Hisob foydalanuvchi qurilmasida bajariladi, Render CPU’sini band qilmaydi.
 - Telegram challenge linki va 7 belgili kod orqali multiplayer.
 - FastAPI WebSocket orqali yurishlarni jonli qabul qilish; uzilishda avtomatik HTTP fallback.
-- 3+0, 10+3 va 15+10 vaqt nazoratlari, timeout va durang/taslim bo‘lish amallari.
+- 3+0, 10+3 va 15+10 vaqt nazoratlari, server nazoratidagi timeout, ko‘rinadigan durang/taslim bo‘lish amallari.
+- Uch karra pozitsiya takrorlanishi va 50 yurish holati avtomatik durang; besh karra/75 yurish, pat va material yetishmasligi ham serverda tekshiriladi.
 - Profil, telefon, ELO, natijalar, FEN va har bir yurish Supabase’da saqlanadi.
 - Mobil Telegram oynasi va desktop uchun alohida responsive ko‘rinish.
 
@@ -110,6 +112,8 @@ Web App’ni botning yangi xabaridagi `ARENANI OCHISH` tugmasidan oching. Ayrim 
 ## Bepul tarif haqida
 
 Render Free web service 15 daqiqa trafik bo‘lmasa uyquga ketishi mumkin; birinchi ochilishda uyg‘onish taxminan bir daqiqagacha cho‘zilishi ehtimoli bor. O‘yin holati Supabase’da saqlanadi, jonli yurishlar ixcham WebSocket xabarlari bilan yuboriladi. Render qayta ishga tushsa ham o‘yinlar yo‘qolmaydi.
+
+Telegram Mini App yopilishi o‘yinni taslim bo‘lish deb hisoblamaydi va soatni pauza qilmaydi. FEN, yurishlar va qolgan vaqt Supabase’da turadi. Raqib online qolsa backend timeoutni mustaqil yakunlaydi; ikkala tomon ham chiqib ketsa birinchi qayta ulanishdayoq o‘tgan vaqt hisoblanib natija bazaga yoziladi. Taslim bo‘lish uchun o‘yin ekranidagi alohida `TASLIM` tugmasi bosiladi.
 
 ## Render log yuborishda
 
