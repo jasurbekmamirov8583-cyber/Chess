@@ -95,9 +95,12 @@ Telegram Web App menu button configured
 
 So‘ng botga `/start` yuboring. Bot avval ism-familiyani so‘raydi, keyin telefonni Telegram’ning rasmiy `request_contact` tugmasi bilan oladi. Avval ro‘yxatdan o‘tgan foydalanuvchi ismini `/name` buyrug‘i bilan yangilashi mumkin. Foydalanuvchi Web App’ni to‘g‘ridan-to‘g‘ri ochsa ham, ism va xalqaro formatdagi telefon kiritilmaguncha o‘yin yaratish/yopiq challenge’ga qo‘shilish bloklanadi.
 
+Web App’ni botning yangi xabaridagi `ARENANI OCHISH` tugmasidan oching. Ayrim Telegram mijozlari chatning doimiy menyu tugmasidan ochilganda `initData` yubormasligi mumkin. Shu holat uchun bot inline tugmaga 10 daqiqalik shaxsiy, bir martalik kirish chiptasini qo‘shadi. Eski xabarlardagi tugmalar qayta yozilmaydi; har bir deploydan keyin sinov uchun botga yangidan `/start` yuboring.
+
 ## Xavfsizlik modeli
 
 - Telegram `initData` HMAC-SHA256 bilan backend’da tekshiriladi va 24 soatdan eski sessiya qabul qilinmaydi.
+- Telegram `initData` kelmagan mijozlar uchun bot yuborgan inline tugmada foydalanuvchiga bog‘langan, 10 daqiqalik bir martalik launch ticket ishlatiladi. U sessiyaga almashtirilishi bilan darhol yaroqsiz qilinadi va frontend manzil satridan olib tashlaydi.
 - Browser uchun Telegram imzosidan keyin alohida 12 soatlik API token beriladi; `APP_SECRET` tashqariga chiqmaydi.
 - Telefon `games` jadvaliga yozilmaydi va raqibga yuborilmaydi.
 - Browser Supabase’ga to‘g‘ridan-to‘g‘ri ulanmaydi; barcha o‘qish va yozishlar ruxsat tekshiradigan Python API orqali o‘tadi.

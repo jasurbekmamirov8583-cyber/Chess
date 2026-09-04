@@ -8,6 +8,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import string
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,7 +64,12 @@ RENDER_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
 APP_URL = (os.getenv("APP_URL") or (f"https://{RENDER_HOSTNAME}" if RENDER_HOSTNAME else "http://localhost:8000")).rstrip("/")
 SUPABASE_URL = normalize_supabase_url(os.getenv("SUPABASE_URL", ""))
 SUPABASE_KEY = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-APP_SECRET = os.getenv("APP_SECRET", "")
+# Manual Render services may not have Blueprint's generated APP_SECRET. The bot
+# token is already a high-entropy server-only secret, so derive a separate JWT
+# signing key from it instead of making Telegram login fail after deployment.
+APP_SECRET = os.getenv("APP_SECRET", "") or (
+    hashlib.sha256(f"zamin-session:{BOT_TOKEN}".encode()).hexdigest() if BOT_TOKEN else ""
+)
 DEV_AUTH = os.getenv("DEV_AUTH", "false").lower() == "true"
 
 app = FastAPI(title="Zamin 3D Chess", version="1.0.0")
@@ -167,10 +173,13 @@ class GameSockets:
 game_sockets = GameSockets()
 pending_names: dict[str, str] = {}
 awaiting_name: set[str] = set()
+pending_challenges: dict[str, str] = {}
+launch_tickets: dict[str, tuple[str, float]] = {}
 
 
 class SessionRequest(BaseModel):
     init_data: str = ""
+    launch_ticket: str = ""
 
 
 class ProfileRequest(BaseModel):
@@ -246,6 +255,30 @@ def make_token(user: dict[str, Any]) -> str:
         "exp": int((stamp + timedelta(hours=12)).timestamp()),
     }
     return jwt.encode(payload, APP_SECRET, algorithm="HS256")
+
+
+def make_launch_ticket(user_id: str) -> str:
+    current = now().timestamp()
+    for value, (_, expires_at) in list(launch_tickets.items()):
+        if expires_at <= current:
+            launch_tickets.pop(value, None)
+    ticket = secrets.token_urlsafe(24)
+    launch_tickets[ticket] = (str(user_id), current + 600)
+    return ticket
+
+
+def launch_url(user_id: str, challenge_code: str = "") -> str:
+    query = f"ticket={make_launch_ticket(user_id)}"
+    if challenge_code:
+        query += f"&startapp=join_{challenge_code}"
+    return f"{APP_URL}/?{query}"
+
+
+def user_from_launch_ticket(ticket: str) -> dict[str, Any]:
+    record = launch_tickets.pop(ticket, None)
+    if not record or record[1] <= now().timestamp():
+        raise HTTPException(401, "Web App havolasi eskirgan. Botga /start yuborib yangi tugmani bosing.")
+    return {"id": int(record[0])}
 
 
 def decode_api_token(token: str) -> dict[str, str]:
@@ -347,7 +380,22 @@ async def config() -> dict[str, Any]:
 
 @app.post("/api/session")
 async def session(body: SessionRequest) -> dict[str, Any]:
-    telegram_user = verify_init_data(body.init_data)
+    if body.init_data:
+        try:
+            telegram_user = verify_init_data(body.init_data)
+        except HTTPException:
+            if not body.launch_ticket:
+                raise
+            telegram_user = user_from_launch_ticket(body.launch_ticket)
+        else:
+            # initData is the stronger proof; discard the fallback ticket so it
+            # cannot be exchanged a second time.
+            if body.launch_ticket:
+                launch_tickets.pop(body.launch_ticket, None)
+    elif body.launch_ticket:
+        telegram_user = user_from_launch_ticket(body.launch_ticket)
+    else:
+        raise HTTPException(401, "Bot chatiga qayting, /start yuboring va ARENANI OCHISH tugmasini bosing.")
     user_id = str(telegram_user["id"])
     profile = await profile_for(user_id)
     return {
@@ -407,7 +455,9 @@ async def create_game(body: GameCreateRequest, user: dict[str, str] = Depends(cu
     }
     rows = await store.call("POST", "games", body=payload)
     game = rows[0]
-    share_url = f"https://t.me/{BOT_USERNAME}/{BOT_APP_SHORT_NAME}?startapp=join_{game['code']}" if BOT_USERNAME else f"{APP_URL}/?startapp=join_{game['code']}"
+    # Send invitations through the bot first. The bot can onboard a new player
+    # and issue a personalised launch ticket before opening the Mini App.
+    share_url = f"https://t.me/{BOT_USERNAME}?start=join_{game['code']}" if BOT_USERNAME else f"{APP_URL}/?startapp=join_{game['code']}"
     return {"game": public_game(game, user["id"]), "share_url": share_url}
 
 
@@ -743,7 +793,10 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
         })
         await telegram("sendMessage", {
             "chat_id": chat_id, "text": "♟ ZAMIN 3D CHESS — o'yinni boshlang",
-            "reply_markup": {"inline_keyboard": [[{"text": "⚔️ ARENANI OCHISH", "web_app": {"url": APP_URL}}]]},
+            "reply_markup": {"inline_keyboard": [[{
+                "text": "⚔️ ARENANI OCHISH",
+                "web_app": {"url": launch_url(user_key, pending_challenges.pop(user_key, ""))},
+            }]]},
         })
     elif str(message.get("text", "")).startswith("/privacy"):
         await telegram("sendMessage", {"chat_id": chat_id, "text": f"Maxfiylik siyosati: {APP_URL}/privacy"})
@@ -755,8 +808,18 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
             "reply_markup": {"force_reply": True, "input_field_placeholder": "Masalan: Aziz Karimov"},
         })
     elif str(message.get("text", "")).startswith(("/start", "/play")):
+        user_key = str(user["id"])
+        command_parts = str(message.get("text", "")).split(maxsplit=1)
+        if command_parts[0].startswith("/start") and len(command_parts) == 2:
+            challenge_match = re.fullmatch(r"join_([A-Za-z1-9]{7})", command_parts[1].strip())
+            if challenge_match:
+                pending_challenges[user_key] = challenge_match.group(1).upper()
+            else:
+                pending_challenges.pop(user_key, None)
+        elif command_parts[0].startswith("/start"):
+            pending_challenges.pop(user_key, None)
         try:
-            existing = await profile_for(str(user["id"]))
+            existing = await profile_for(user_key)
         except HTTPException as exc:
             log.exception("Profile lookup failed during Telegram onboarding")
             await telegram("sendMessage", {
@@ -767,10 +830,13 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
         if existing:
             await telegram("sendMessage", {
                 "chat_id": chat_id, "text": f"Qaytganingizdan xursandmiz, {existing['full_name']}!",
-                "reply_markup": {"inline_keyboard": [[{"text": "♟ 3D SHAXMAT", "web_app": {"url": APP_URL}}]]},
+                "reply_markup": {"inline_keyboard": [[{
+                    "text": "♟ 3D SHAXMAT",
+                    "web_app": {"url": launch_url(user_key, pending_challenges.pop(user_key, ""))},
+                }]]},
             })
         else:
-            awaiting_name.add(str(user["id"]))
+            awaiting_name.add(user_key)
             await telegram("sendMessage", {
                 "chat_id": chat_id,
                 "text": "ZAMIN 3D CHESS'ga xush kelibsiz! Avval ism va familiyangizni yozing:",
