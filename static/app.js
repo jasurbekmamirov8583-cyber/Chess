@@ -46,20 +46,44 @@ function setLoading(button, active, text = 'KUTILMOQDA...') {
 }
 
 class AudioForge {
-  constructor() { this.ctx = null; }
-  wake() { this.ctx ||= new (window.AudioContext || window.webkitAudioContext)(); this.ctx.resume(); }
-  tone(freq, duration, type = 'sine', volume = .07, slide = 0) {
-    if (!state.sound) return;
-    this.wake(); const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
-    osc.type = type; osc.frequency.setValueAtTime(freq, t); osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), t + duration);
-    gain.gain.setValueAtTime(volume, t); gain.gain.exponentialRampToValueAtTime(.001, t + duration);
-    osc.connect(gain).connect(this.ctx.destination); osc.start(t); osc.stop(t + duration);
+  constructor() { this.ctx = null; this.master = null; this.reverb = null; }
+  wake() {
+    if (!this.ctx) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+      this.ctx = new AudioContext();
+      this.master = this.ctx.createDynamicsCompressor();
+      this.master.threshold.value = -18; this.master.knee.value = 18; this.master.ratio.value = 5;
+      this.master.connect(this.ctx.destination);
+      this.reverb = this.ctx.createConvolver();
+      const length = Math.floor(this.ctx.sampleRate * .65), impulse = this.ctx.createBuffer(2, length, this.ctx.sampleRate);
+      for (let channel=0; channel<2; channel++) {
+        const data=impulse.getChannelData(channel);
+        for (let i=0;i<length;i++) data[i]=(Math.random()*2-1)*Math.pow(1-i/length,2.7);
+      }
+      this.reverb.buffer=impulse; this.reverb.connect(this.master);
+    }
+    this.ctx.resume();
   }
-  move() { this.tone(155, .12, 'triangle', .05, -35); }
-  capture() { this.tone(90, .25, 'sawtooth', .06, -55); setTimeout(() => this.tone(350, .12, 'square', .025, -200), 80); }
-  check() { this.tone(520, .18, 'triangle', .055, 180); }
-  victory() { [392, 494, 587, 784].forEach((n, i) => setTimeout(() => this.tone(n, .35, 'sine', .05, 40), i * 110)); }
+  tone(freq, duration, type='sine', volume=.06, slide=0, delay=0, wet=.15) {
+    if (!state.sound) return;
+    this.wake(); if(!this.ctx)return; const t=this.ctx.currentTime+delay;
+    const osc=this.ctx.createOscillator(), gain=this.ctx.createGain(), dry=this.ctx.createGain(), send=this.ctx.createGain();
+    osc.type=type; osc.frequency.setValueAtTime(freq,t); osc.frequency.exponentialRampToValueAtTime(Math.max(25,freq+slide),t+duration);
+    gain.gain.setValueAtTime(.001,t); gain.gain.exponentialRampToValueAtTime(volume,t+.012); gain.gain.exponentialRampToValueAtTime(.001,t+duration);
+    dry.gain.value=1-wet;send.gain.value=wet;osc.connect(gain);gain.connect(dry).connect(this.master);gain.connect(send).connect(this.reverb);osc.start(t);osc.stop(t+duration+.02);
+  }
+  noise(duration=.1, volume=.04, highpass=500, delay=0) {
+    if(!state.sound)return;this.wake();if(!this.ctx)return;const t=this.ctx.currentTime+delay,length=Math.floor(this.ctx.sampleRate*duration),buffer=this.ctx.createBuffer(1,length,this.ctx.sampleRate),data=buffer.getChannelData(0);
+    for(let i=0;i<length;i++)data[i]=(Math.random()*2-1)*Math.pow(1-i/length,2);
+    const source=this.ctx.createBufferSource(),filter=this.ctx.createBiquadFilter(),gain=this.ctx.createGain();source.buffer=buffer;filter.type='highpass';filter.frequency.value=highpass;gain.gain.setValueAtTime(volume,t);gain.gain.exponentialRampToValueAtTime(.001,t+duration);source.connect(filter).connect(gain).connect(this.master);source.start(t);
+  }
+  move() { this.tone(118,.11,'sine',.085,-28);this.tone(238,.07,'triangle',.035,-75,.025);this.noise(.055,.018,260,.015); }
+  capture() { this.tone(82,.28,'sine',.11,-42);this.tone(1180,.34,'triangle',.035,-730,.025,.42);this.tone(1760,.19,'sine',.018,-950,.06,.5);this.noise(.2,.065,700,.018); }
+  check() { this.tone(660,.42,'sine',.055,95,0,.48);this.tone(990,.34,'sine',.026,-40,.06,.55); }
+  draw() { this.tone(310,.3,'triangle',.045,-35);this.tone(265,.4,'sine',.035,-20,.12,.4); }
+  defeat() { [220,185,147].forEach((n,i)=>this.tone(n,.42,'triangle',.05,-35,i*.14,.3)); }
+  victory() { [392,494,587,784].forEach((n,i)=>this.tone(n,.5,'sine',.052,35,i*.11,.38)); }
 }
 const audio = new AudioForge();
 
@@ -70,7 +94,7 @@ class ChessArena3D {
     this.camera = new THREE.PerspectiveCamera(hero ? 34 : 40, 1, .1, 100);
     this.camera.position.set(hero ? 5.8 : 0, hero ? 6.3 : 8.4, hero ? 6.8 : 8.1);
     this.renderer = new THREE.WebGLRenderer({antialias: true, alpha: true, powerPreference: 'high-performance'});
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.8));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, hero ? 1.35 : innerWidth < 700 ? 1.4 : 1.8));
     this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.12;
     container.append(this.renderer.domElement);
@@ -80,7 +104,7 @@ class ChessArena3D {
     this.buildLights(); this.buildBoard();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, 0, 0); this.controls.enablePan = false;
-    this.controls.enableZoom = interactive; this.controls.minDistance = 7; this.controls.maxDistance = 12;
+    this.controls.enableZoom = interactive; this.controls.minDistance = 6.5; this.controls.maxDistance = 24;
     this.controls.minPolarAngle = .48; this.controls.maxPolarAngle = 1.25;
     this.controls.autoRotate = hero; this.controls.autoRotateSpeed = .7;
     this.controls.enableDamping = true; this.controls.dampingFactor = .06;
@@ -93,60 +117,63 @@ class ChessArena3D {
     this.clock = new THREE.Clock(); this.loop();
   }
   buildLights() {
-    this.scene.add(new THREE.HemisphereLight(0xb8c6de, 0x1e160d, 1.25));
-    const key = new THREE.SpotLight(0xffd99a, 85, 30, .52, .7); key.position.set(-4, 9, 5); key.castShadow = true; key.shadow.mapSize.set(1024, 1024); this.scene.add(key);
-    const rim = new THREE.PointLight(0x4f73a3, 32, 20); rim.position.set(6, 3, -5); this.scene.add(rim);
+    this.scene.add(new THREE.HemisphereLight(0xd9f7ff,0x211208,1.55));
+    const key=new THREE.SpotLight(0xffdfa2,105,32,.55,.72);key.position.set(-5,10,6);key.castShadow=true;key.shadow.mapSize.set(this.hero?512:1024,this.hero?512:1024);key.shadow.bias=-.00025;this.scene.add(key);
+    const cool=new THREE.SpotLight(0x68dce8,72,28,.65,.8);cool.position.set(6,7,-6);this.scene.add(cool);
+    const rim=new THREE.PointLight(0xff934f,24,18);rim.position.set(-6,2,-3);this.scene.add(rim);
   }
   buildBoard() {
-    const baseMat = new THREE.MeshStandardMaterial({color: 0x111318, roughness: .32, metalness: .65});
-    const base = new THREE.Mesh(new THREE.BoxGeometry(9.2, .34, 9.2), baseMat); base.position.y = -.25; base.receiveShadow = true; this.root.add(base);
-    const rim = new THREE.Mesh(new THREE.BoxGeometry(8.55, .14, 8.55), new THREE.MeshStandardMaterial({color:0x8d6937,metalness:.85,roughness:.24})); rim.position.y = -.03; this.root.add(rim);
-    const light = new THREE.MeshStandardMaterial({color:0xb9ad96,roughness:.5,metalness:.08});
-    const dark = new THREE.MeshStandardMaterial({color:0x242930,roughness:.42,metalness:.2});
+    const baseMat=new THREE.MeshPhysicalMaterial({color:0x111a22,roughness:.23,metalness:.72,clearcoat:.72});
+    const base=new THREE.Mesh(new THREE.BoxGeometry(9.45,.38,9.45),baseMat);base.position.y=-.28;base.receiveShadow=true;this.root.add(base);
+    const rim=new THREE.Mesh(new THREE.BoxGeometry(8.72,.16,8.72),new THREE.MeshStandardMaterial({color:0xbd7d36,metalness:.78,roughness:.28}));rim.position.y=-.035;this.root.add(rim);
+    const light=new THREE.MeshPhysicalMaterial({color:0xe0cfb3,roughness:.42,metalness:.04,clearcoat:.28});
+    const dark=new THREE.MeshPhysicalMaterial({color:0x315463,roughness:.36,metalness:.18,clearcoat:.4});
     for (let r=0;r<8;r++) for(let f=0;f<8;f++) {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(.98,.13,.98), (f+r)%2 ? dark : light);
+      const mesh=new THREE.Mesh(new THREE.BoxGeometry(.985,.14,.985),(f+r)%2?dark:light);
       const square = `${'abcdefgh'[f]}${r+1}`;
-      mesh.position.set(f-3.5,.06,3.5-r); mesh.receiveShadow = true; mesh.userData.square = square;
+      mesh.position.set(f-3.5,.065,3.5-r);mesh.receiveShadow=true;mesh.userData.square=square;
       this.root.add(mesh); this.squares.push(mesh);
     }
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(11,64),new THREE.MeshStandardMaterial({color:0x050608,transparent:true,opacity:.66,roughness:1}));
-    floor.rotation.x=-Math.PI/2; floor.position.y=-.47; floor.receiveShadow=true; this.scene.add(floor);
+    const floor=new THREE.Mesh(new THREE.CircleGeometry(12,64),new THREE.MeshStandardMaterial({color:0x061017,transparent:true,opacity:.78,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.y=-.49;floor.receiveShadow=true;this.scene.add(floor);
   }
   material(color) {
-    return color === 'w'
-      ? new THREE.MeshPhysicalMaterial({color:0xe5dcc8,roughness:.2,metalness:.15,clearcoat:.9,clearcoatRoughness:.14})
-      : new THREE.MeshPhysicalMaterial({color:0x242830,roughness:.16,metalness:.72,clearcoat:.75});
+    return color==='w'
+      ? new THREE.MeshPhysicalMaterial({color:0xf1e5ce,roughness:.22,metalness:.08,clearcoat:1,clearcoatRoughness:.11})
+      : new THREE.MeshPhysicalMaterial({color:0x263b49,roughness:.18,metalness:.62,clearcoat:.9,clearcoatRoughness:.13});
   }
-  gold() { return new THREE.MeshStandardMaterial({color:0xc89b52,metalness:.86,roughness:.2}); }
+  accent(color='w') { return new THREE.MeshStandardMaterial({color:color==='w'?0xe7a943:0xe66d42,metalness:.9,roughness:.18}); }
+  gold() { return this.accent('w'); }
   part(geometry, material, y, group, scale=1) {
     const m = new THREE.Mesh(geometry, material); m.position.y=y; m.scale.setScalar(scale); m.castShadow=true; m.receiveShadow=true; group.add(m); return m;
   }
+  lathe(profile,material,group,segments=36){const geometry=new THREE.LatheGeometry(profile.map(([r,y])=>new THREE.Vector2(r,y)),segments);const mesh=new THREE.Mesh(geometry,material);mesh.castShadow=true;mesh.receiveShadow=true;group.add(mesh);return mesh}
+  ring(radius,y,material,group,tube=.035){const ring=this.part(new THREE.TorusGeometry(radius,tube,10,32),material,y,group);ring.rotation.x=Math.PI/2;return ring}
+  base(material,accent,group){this.lathe([[0,.04],[.38,.04],[.47,.1],[.49,.17],[.43,.24],[.32,.29],[.29,.34]],material,group);this.ring(.345,.27,accent,group,.035)}
   piece(type, color) {
-    const g = new THREE.Group(), m=this.material(color), gold=this.gold();
-    this.part(new THREE.CylinderGeometry(.39,.47,.13,28),m,.13,g);
-    this.part(new THREE.CylinderGeometry(.31,.39,.12,28),gold,.245,g);
+    const g=new THREE.Group(),m=this.material(color),accent=this.accent(color);this.base(m,accent,g);
     if(type==='p'){
-      this.part(new THREE.CylinderGeometry(.17,.29,.52,24),m,.54,g); this.part(new THREE.SphereGeometry(.23,24,16),m,.91,g);
+      this.lathe([[.28,.31],[.23,.39],[.15,.53],[.14,.68],[.19,.76]],m,g);this.ring(.19,.76,accent,g,.028);this.part(new THREE.SphereGeometry(.235,28,20),m,1.01,g);
     } else if(type==='r'){
-      this.part(new THREE.CylinderGeometry(.29,.34,.62,8),m,.58,g); this.part(new THREE.CylinderGeometry(.38,.31,.22,8),m,.99,g);
-      for(let i=0;i<4;i++){const tooth=this.part(new THREE.BoxGeometry(.16,.18,.17),m,1.16,g); tooth.position.x=Math.cos(i*Math.PI/2)*.27;tooth.position.z=Math.sin(i*Math.PI/2)*.27;}
+      this.lathe([[.3,.31],[.28,.42],[.25,.78],[.33,.87],[.38,.96]],m,g,24);this.ring(.33,.88,accent,g,.032);this.part(new THREE.CylinderGeometry(.39,.37,.2,8),m,1.04,g);
+      for(let i=0;i<4;i++){const tooth=this.part(new THREE.BoxGeometry(.19,.2,.2),m,1.22,g);tooth.position.x=Math.cos(i*Math.PI/2+.4)*.27;tooth.position.z=Math.sin(i*Math.PI/2+.4)*.27;}
     } else if(type==='n'){
-      this.part(new THREE.CylinderGeometry(.21,.34,.42,20),m,.48,g);
-      const neck=this.part(new THREE.CapsuleGeometry(.18,.48,8,16),m,.82,g);neck.rotation.z=-.42;neck.position.x=-.1;
-      const muzzle=this.part(new THREE.ConeGeometry(.2,.42,16),m,1.13,g);muzzle.rotation.z=-1.18;muzzle.position.x=-.25;
-      for(const side of [-1,1]){const ear=this.part(new THREE.ConeGeometry(.055,.22,8),gold,1.32,g);ear.position.x=-.08;ear.position.z=side*.1;}
+      this.lathe([[.29,.31],[.3,.43],[.24,.52],[.22,.61]],m,g,28);
+      const shape=new THREE.Shape();shape.moveTo(-.28,-.48);shape.bezierCurveTo(-.36,-.16,-.27,.1,-.08,.25);shape.bezierCurveTo(.03,.36,.04,.54,-.04,.68);shape.lineTo(.14,.59);shape.bezierCurveTo(.33,.38,.35,.05,.26,-.18);shape.lineTo(.43,-.27);shape.lineTo(.23,-.4);shape.closePath();
+      const horse=new THREE.Mesh(new THREE.ExtrudeGeometry(shape,{depth:.33,bevelEnabled:true,bevelSegments:3,steps:1,bevelSize:.045,bevelThickness:.045}),m);horse.geometry.center();horse.position.set(-.02,1.04,-.165);horse.castShadow=true;g.add(horse);
+      const mane=this.part(new THREE.BoxGeometry(.07,.66,.38),accent,1.13,g);mane.rotation.z=-.14;mane.position.x=.16;
+      for(const side of [-1,1]){const ear=this.part(new THREE.ConeGeometry(.055,.24,10),m,1.63,g);ear.position.x=.02;ear.position.z=side*.11;ear.rotation.z=-.12;}
     } else if(type==='b'){
-      this.part(new THREE.CylinderGeometry(.18,.34,.62,24),m,.57,g);this.part(new THREE.SphereGeometry(.25,24,16),m,.98,g);
-      const tip=this.part(new THREE.ConeGeometry(.13,.3,20),gold,1.23,g);tip.rotation.z=.18;
+      this.lathe([[.29,.31],[.3,.4],[.18,.58],[.15,.82],[.23,.91]],m,g);this.ring(.225,.91,accent,g,.032);
+      const crown=this.part(new THREE.SphereGeometry(.25,30,22),m,1.16,g);crown.scale.set(.86,1.25,.86);const slash=this.part(new THREE.BoxGeometry(.055,.46,.3),accent,1.19,g);slash.rotation.z=-.48;this.part(new THREE.SphereGeometry(.065,16,12),accent,1.49,g);
     } else if(type==='q'){
-      this.part(new THREE.CylinderGeometry(.2,.36,.7,28),m,.61,g);this.part(new THREE.TorusGeometry(.29,.055,10,28),gold,1.0,g);g.children.at(-1).rotation.x=Math.PI/2;
-      for(let i=0;i<6;i++){const spike=this.part(new THREE.ConeGeometry(.075,.33,10),m,1.2,g);spike.position.x=Math.cos(i*Math.PI/3)*.23;spike.position.z=Math.sin(i*Math.PI/3)*.23;spike.rotation.z=Math.cos(i*Math.PI/3)*.22;}
-      this.part(new THREE.SphereGeometry(.1,16,12),gold,1.4,g);
+      this.lathe([[.29,.31],[.31,.42],[.2,.61],[.17,.93],[.28,1.05],[.32,1.13]],m,g);this.ring(.31,1.1,accent,g,.04);
+      for(let i=0;i<7;i++){const a=i*Math.PI*2/7,spike=this.part(new THREE.ConeGeometry(.075,.34,12),m,1.31,g);spike.position.x=Math.cos(a)*.27;spike.position.z=Math.sin(a)*.27;spike.rotation.z=Math.cos(a)*.22;spike.rotation.x=-Math.sin(a)*.22;this.part(new THREE.SphereGeometry(.065,14,10),accent,1.49,g).position.set(Math.cos(a)*.3,1.49,Math.sin(a)*.3);}
+      this.part(new THREE.SphereGeometry(.1,18,12),accent,1.47,g);
     } else {
-      this.part(new THREE.CylinderGeometry(.22,.37,.76,28),m,.64,g);this.part(new THREE.TorusGeometry(.29,.055,10,28),gold,1.05,g);g.children.at(-1).rotation.x=Math.PI/2;
-      this.part(new THREE.BoxGeometry(.12,.48,.12),gold,1.35,g);this.part(new THREE.BoxGeometry(.4,.12,.12),gold,1.39,g);
+      this.lathe([[.29,.31],[.32,.42],[.21,.61],[.18,.98],[.3,1.08],[.28,1.19],[.18,1.28]],m,g);this.ring(.29,1.1,accent,g,.042);this.part(new THREE.SphereGeometry(.13,18,12),m,1.38,g);
+      this.part(new THREE.BoxGeometry(.105,.48,.105),accent,1.62,g);this.part(new THREE.BoxGeometry(.39,.105,.105),accent,1.67,g);
     }
-    g.scale.setScalar(.82); g.rotation.y=color==='b'?Math.PI:0;
+    g.scale.setScalar(type==='p'?.73:.71);g.rotation.y=color==='b'?Math.PI:0;
     g.traverse(o=>{o.userData.pieceRoot=g}); return g;
   }
   squarePosition(square) { return new THREE.Vector3(square.charCodeAt(0)-97-3.5,.14,3.5-(Number(square[1])-1)); }
@@ -161,7 +188,9 @@ class ChessArena3D {
   }
   orient(color='white') {
     this.viewColor=color;
-    const z=color==='black'?-8.1:8.1; this.camera.position.set(0,8.4,z); this.controls.target.set(0,0,0); this.controls.update();
+    const rect=this.container.getBoundingClientRect(),aspect=Math.max(.45,rect.width/Math.max(1,rect.height));
+    const distance=this.hero?7.2:(aspect<.95?Math.min(16.5,9.4/aspect):8.7),sign=color==='black'?-1:1;
+    this.camera.position.set(0,distance*.94,sign*distance);this.controls.target.set(0,.18,0);this.controls.update();
   }
   showMoves(selected, destinations=[]) {
     this.clearMarkers();
@@ -179,18 +208,20 @@ class ChessArena3D {
   weapon(kind='sword') {
     const g=new THREE.Group(), metal=new THREE.MeshStandardMaterial({color:0xd9dce3,metalness:.95,roughness:.12}), wood=new THREE.MeshStandardMaterial({color:0x744727,roughness:.55});
     if(kind==='hammer'){const head=new THREE.Mesh(new THREE.BoxGeometry(.5,.24,.25),metal);head.position.y=.7;g.add(head)}
+    else if(kind==='lance'||kind==='spear'){const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.025,.035,.86,10),wood);shaft.position.y=.4;g.add(shaft);const tip=new THREE.Mesh(new THREE.ConeGeometry(kind==='lance'?.09:.07,.32,12),metal);tip.position.y=.98;g.add(tip)}
+    else if(kind==='staff'){const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.035,.045,.85,10),wood);shaft.position.y=.38;g.add(shaft);const orb=new THREE.Mesh(new THREE.SphereGeometry(.1,14,10),this.gold());orb.position.y=.86;g.add(orb)}
     else {const blade=new THREE.Mesh(new THREE.BoxGeometry(.08,.7,.035),metal);blade.position.y=.65;g.add(blade);const guard=new THREE.Mesh(new THREE.BoxGeometry(.35,.06,.07),this.gold());guard.position.y=.29;g.add(guard)}
-    const handle=new THREE.Mesh(new THREE.CylinderGeometry(.045,.045,.35,10),wood);handle.position.y=.13;g.add(handle);g.traverse(o=>o.castShadow=true);return g;
+    if(!['lance','spear','staff'].includes(kind)){const handle=new THREE.Mesh(new THREE.CylinderGeometry(.045,.045,.35,10),wood);handle.position.y=.13;g.add(handle)}g.traverse(o=>o.castShadow=true);return g;
   }
   async animateMove(uci, captured=false) {
     const from=uci.slice(0,2),to=uci.slice(2,4),mover=this.pieces.get(from);if(!mover){this.load(state.game.fen);return}
     const start=mover.position.clone(),end=this.squarePosition(to),victim=this.pieces.get(to);
-    let weapon=null;if(captured){weapon=this.weapon(mover.userData.type==='r'?'hammer':'sword');weapon.position.set(0,.65,.05);weapon.rotation.z=-1.5;mover.add(weapon);audio.capture()}else audio.move();
+    let weapon=null;if(captured){const arsenal={r:'hammer',n:'lance',b:'staff',p:'spear'};weapon=this.weapon(arsenal[mover.userData.type]||'sword');weapon.position.set(0,.65,.05);weapon.rotation.z=-1.5;mover.add(weapon);audio.capture()}else audio.move();
     const duration=captured?760:430,t0=performance.now();
     await new Promise(resolve=>{const tick=(time)=>{const p=Math.min(1,(time-t0)/duration),ease=1-Math.pow(1-p,3);mover.position.lerpVectors(start,end,ease);mover.position.y=.14+Math.sin(p*Math.PI)*(captured ? .34 : .16);if(weapon)weapon.rotation.z=-1.5+p*3.1;if(victim&&p>.42){const q=(p-.42)/.58;victim.rotation.z=q*1.3;victim.scale.setScalar(Math.max(.05,1-q*.95));victim.position.y=.14-q*.45}p<1?requestAnimationFrame(tick):resolve()};requestAnimationFrame(tick)});
     if(weapon)mover.remove(weapon);
   }
-  resize(){const w=this.container.clientWidth,h=this.container.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h,false);this.camera.aspect=w/h;this.camera.updateProjectionMatrix()}
+  resize(){const w=this.container.clientWidth,h=this.container.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h,false);this.camera.aspect=w/h;this.camera.updateProjectionMatrix();if(!this.hero)this.orient(this.viewColor||'white')}
   loop(){requestAnimationFrame(()=>this.loop());this.controls.update();if(this.hero)this.root.position.y=Math.sin(performance.now()/900)*.04;this.renderer.render(this.scene,this.camera)}
 }
 
@@ -243,8 +274,10 @@ function bindUI() {
   $('#leave-game').onclick=leaveGame; $('#result-home').onclick=()=>{closeModal($('#result-home'));leaveGame()};
   $('#view-toggle').onclick=()=>state.board?.orient(state.board.viewColor==='white'?'black':'white');
   $('#panel-toggle').onclick=()=>$('.game-panel').classList.toggle('open');
+  $$('[data-panel-open]').forEach(btn=>btn.onclick=()=>$('.game-panel').classList.add('open'));
+  $$('[data-panel-close]').forEach(btn=>btn.onclick=()=>$('.game-panel').classList.remove('open'));
   $('#camera-tab').onclick=()=>{state.board?.orient(state.board.viewColor==='white'?'black':'white');if(innerWidth<=900)$('.game-panel').classList.remove('open')};
-  $('#sound-toggle').onclick=()=>{state.sound=!state.sound;$('#sound-toggle').textContent=state.sound?'◖':'×';toast(state.sound?'Ovoz yoqildi':'Ovoz o‘chirildi')};
+  $$('[data-sound-toggle]').forEach(btn=>btn.onclick=()=>{state.sound=!state.sound;$$('[data-sound-toggle] b').forEach(icon=>icon.textContent=state.sound?'◖':'×');if(state.sound)audio.move();toast(state.sound?'Ovoz yoqildi':'Ovoz o‘chirildi')});
   $$('[data-action]').forEach(btn=>btn.onclick=()=>gameAction(btn.dataset.action));
   document.addEventListener('pointerdown',()=>audio.wake(),{once:true});
 }
@@ -322,6 +355,7 @@ function renderGame(){
   if(!moves.length)list.innerHTML='<div class="moves-empty">Birinchi yurish tarixni boshlaydi.</div>';
   else{let html='';for(let i=0;i<moves.length;i+=2)html+=`<div class="move-row"><span>${i/2+1}.</span><b>${escapeHtml(moves[i]?.san||'')}</b><b>${escapeHtml(moves[i+1]?.san||'')}</b></div>`;list.innerHTML=html;list.scrollTop=list.scrollHeight}
   const offer=g.draw_offer_by&&g.draw_offer_by!==String(state.user.id);$('#draw-offer').classList.toggle('hidden',!offer);
+  $$('[data-action="offer_draw"],[data-action="resign"]').forEach(button=>button.disabled=g.status!=='active');
   if(!['waiting','active'].includes(g.status)&&!$('#result-modal:not(.hidden)'))showResult(g);
 }
 
@@ -375,7 +409,7 @@ async function gameAction(action){
   try{const data=await api(`/api/games/${state.game.id}/action`,{method:'POST',body:JSON.stringify({action})});await updateGame(data.game);if(action!=='claim_timeout')toast(action==='offer_draw'?(data.game.status==='draw'?'Durang qoidasi tasdiqlandi':'Durang taklifi yuborildi'):'Amal bajarildi','good')}catch(e){if(action==='claim_timeout')state.timeoutClaimed=false;else toast(e.message,'error')}
 }
 function reasonLabel(reason){return({checkmate:'Shox mot',stalemate:'Pat',insufficient_material:'Donalar yetarli emas',seventyfive_moves:'75 yurish qoidasi',fivefold_repetition:'Besh karra takrorlanish',threefold_repetition:'Uch karra takrorlanish',fifty_moves:'50 yurish qoidasi',timeout:'Vaqt tugadi',timeout_insufficient_material:'Vaqt tugadi, ammo mot uchun dona yetarli emas',resignation:'Taslim bo‘lish',agreement:'Kelishilgan durang',aborted:'Bekor qilindi'})[reason]||reason||'O‘yin yakuni'}
-function showResult(g){const mine=g.my_color,status=g.status;const won=status===`${mine}_won`,draw=status==='draw';$('#result-icon').textContent=won?'♛':draw?'½':'♟';$('#result-title').textContent=won?'G‘ALABA':draw?'DURANG':'MAG‘LUBIYAT';$('#result-reason').textContent=reasonLabel(g.result_reason);openModal('#result-modal');if(won)audio.victory()}
+function showResult(g){const mine=g.my_color,status=g.status;const won=status===`${mine}_won`,draw=status==='draw';$('#result-icon').textContent=won?'♛':draw?'½':'♟';$('#result-title').textContent=won?'G‘ALABA':draw?'DURANG':'MAG‘LUBIYAT';$('#result-reason').textContent=reasonLabel(g.result_reason);openModal('#result-modal');if(won)audio.victory();else if(draw)audio.draw();else audio.defeat()}
 
 async function leaveGame(){
   if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null}state.realtimeLive=false;state.game=null;$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');await loadRecent();
