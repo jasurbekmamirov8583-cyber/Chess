@@ -62,6 +62,9 @@ alter table public.profiles add column if not exists last_puzzle_date date;
 alter table public.profiles add column if not exists army_xp integer not null default 0;
 alter table public.profiles add column if not exists equipped_theme text not null default 'registan';
 alter table public.profiles add column if not exists performance_mode text not null default 'auto';
+alter table public.profiles add column if not exists board_palette text not null default 'pro_green';
+alter table public.profiles add column if not exists piece_style text not null default 'staunton';
+alter table public.profiles add column if not exists board_shape text not null default 'tournament';
 
 alter table public.games add column if not exists variant text not null default 'standard';
 alter table public.games add column if not exists white_checks integer not null default 0;

@@ -179,6 +179,12 @@ class GameSockets:
         if not room:
             self.rooms.pop(game_id, None)
 
+    def is_player_online(self, game_id: str, user_id: str) -> bool:
+        return str(user_id) in {
+            str(connected_id) for connected_id in self.rooms.get(str(game_id), {}).values()
+            if connected_id is not None
+        }
+
     async def broadcast(self, game: dict[str, Any]) -> None:
         game_id = str(game["id"])
         room = self.rooms.get(game_id, {})
@@ -229,6 +235,11 @@ class ActionRequest(BaseModel):
 class PreferencesRequest(BaseModel):
     theme: Literal["registan", "cyber", "ice", "volcano"]
     performance_mode: Literal["auto", "quality", "battery"] = "auto"
+    board_palette: Literal["pro_green", "walnut", "slate", "contrast"] = "pro_green"
+    piece_style: Literal["staunton", "modern", "royal"] = "staunton"
+    board_shape: Literal["tournament", "soft", "floating"] = "tournament"
+
+
 class PuzzleCompleteRequest(BaseModel):
     puzzle_id: str = Field(min_length=2, max_length=40)
     elapsed_ms: int = Field(default=0, ge=0, le=3600000)
@@ -513,7 +524,14 @@ async def save_preferences(body: PreferencesRequest, user: dict[str, str] = Depe
     profile = await require_profile(user["id"])
     rows = await store.call(
         "PATCH", "profiles", params={"telegram_id": f"eq.{user['id']}"},
-        body={"equipped_theme": body.theme, "performance_mode": body.performance_mode, "updated_at": iso()},
+        body={
+            "equipped_theme": body.theme,
+            "performance_mode": body.performance_mode,
+            "board_palette": body.board_palette,
+            "piece_style": body.piece_style,
+            "board_shape": body.board_shape,
+            "updated_at": iso(),
+        },
     )
     return {"profile": rows[0] if rows else profile}
 
@@ -610,6 +628,10 @@ async def claim_challenge(challenge_code: str, user_id: str, full_name: str) -> 
     if not rows:
         raise HTTPException(409, "Challenge'ni boshqa o'yinchi qabul qildi")
     await game_sockets.broadcast(rows[0])
+    asyncio.create_task(notify_player(
+        rows[0], str(rows[0]["white_id"]),
+        f"⚔️ {full_name} challenge'ni qabul qildi. Jang boshlandi!",
+    ))
     return rows[0]
 
 
@@ -782,6 +804,7 @@ async def settle_timeout(game: dict[str, Any]) -> dict[str, Any]:
     updated = rows[0]
     await apply_rating(updated)
     await game_sockets.broadcast(updated)
+    asyncio.create_task(notify_game_event(updated, actor_id=None))
     return updated
 
 
@@ -839,6 +862,7 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
         if rows:
             await apply_rating(rows[0])
             await game_sockets.broadcast(rows[0])
+            asyncio.create_task(notify_game_event(rows[0], actor_id=None))
         raise HTTPException(409, "Vaqt tugadi")
 
     # Rebuild the complete position so repetition and 50/75-move rules retain history.
@@ -901,6 +925,7 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
     if status != "active":
         await apply_rating(updated)
     await game_sockets.broadcast(updated)
+    asyncio.create_task(notify_game_event(updated, actor_id=str(actor_id), san=san))
     return {"game": public_game(updated, user["id"]), "move": {"uci": body.uci, "san": san}}
 
 
@@ -955,6 +980,8 @@ async def game_action(game_id: UUID, body: ActionRequest, user: dict[str, str] =
     if rows[0]["status"] not in ("waiting", "active"):
         await apply_rating(rows[0])
     await game_sockets.broadcast(rows[0])
+    if body.action == "offer_draw" or rows[0]["status"] not in ("waiting", "active"):
+        asyncio.create_task(notify_game_event(rows[0], actor_id=str(user["id"]), action=body.action))
     return {"game": public_game(rows[0], user["id"])}
 
 
@@ -1137,6 +1164,64 @@ async def telegram(method: str, payload: dict[str, Any]) -> dict[str, Any] | Non
     except (httpx.HTTPError, ValueError) as exc:
         log.error("Telegram %s connection failed: %s", method, exc)
         return None
+
+
+async def notify_player(game: dict[str, Any], user_id: str, text: str) -> None:
+    """Notify only a participant who does not currently have this game open."""
+    user_id = str(user_id or "")
+    if not BOT_TOKEN or not user_id or user_id.startswith("AI:"):
+        return
+    if game_sockets.is_player_online(str(game["id"]), user_id):
+        return
+    await telegram("sendMessage", {
+        "chat_id": int(user_id),
+        "text": text,
+        "reply_markup": {"inline_keyboard": [[{
+            "text": "♟ O‘YINGA QAYTISH",
+            "web_app": {"url": launch_url(user_id, str(game["code"]))},
+        }]]},
+    })
+
+
+async def notify_game_event(
+    game: dict[str, Any], actor_id: str | None, san: str = "", action: str = "",
+) -> None:
+    """Send move/result/draw alerts to offline participants, never on plain app open."""
+    participants = [
+        ("white", str(game.get("white_id") or ""), game.get("white_name") or "Oq"),
+        ("black", str(game.get("black_id") or ""), game.get("black_name") or "Qora"),
+    ]
+    status = str(game.get("status") or "")
+    finished = status not in ("waiting", "active")
+    reason_labels = {
+        "checkmate": "shox mot", "timeout": "vaqt tugadi", "resignation": "taslim bo‘lish",
+        "agreement": "kelishilgan durang", "threefold_repetition": "uch karra takrorlanish",
+        "fivefold_repetition": "besh karra takrorlanish", "fifty_moves": "50 yurish qoidasi",
+        "seventyfive_moves": "75 yurish qoidasi", "stalemate": "pat",
+        "insufficient_material": "donalar yetarli emas", "timeout_insufficient_material": "vaqt va material qoidasi",
+        "kingofthehill": "markaziy taxt", "threecheck": "uchinchi shax",
+    }
+    actor_name = next((name for _, uid, name in participants if uid == str(actor_id)), "Raqib")
+    for color, user_id, _ in participants:
+        if not user_id or user_id.startswith("AI:") or user_id == str(actor_id or ""):
+            continue
+        if finished:
+            if status == "draw" or status == "aborted":
+                result = "Durang" if status == "draw" else "O‘yin bekor qilindi"
+            elif status == f"{color}_won":
+                result = "G‘alaba!"
+            else:
+                result = "Mag‘lubiyat"
+            reason = reason_labels.get(str(game.get("result_reason") or ""), "o‘yin yakuni")
+            text = f"🏁 {result} · {reason}.\nJang: {game['code']}"
+        elif action == "offer_draw":
+            text = f"½ {actor_name} durang taklif qildi.\nJang: {game['code']}"
+        elif san:
+            marker = " — SHAX!" if "+" in san or "#" in san else ""
+            text = f"♟ {actor_name} yurdi: {san}{marker}\nNavbat sizda · Jang: {game['code']}"
+        else:
+            continue
+        await notify_player(game, user_id, text)
 
 
 @app.on_event("startup")

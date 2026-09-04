@@ -7,9 +7,9 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - To‘liq legal yurishlar: rokировка, en passant, promotion (queen/rook/bishop/knight), shax va mot.
 - Pat, yetarli bo‘lmagan material, 3/5 karra takrorlanish, 50/75 yurish qoidalari.
 - Server-authoritative yurish tekshiruvi (`python-chess`) va versiya orqali parallel yurishdan himoya.
-- Har biri keskin farqlanadigan procedural Staunton 3D donalari, qora donalarni aniq ajratadigan yorug‘ arena, kuchli old yoritish, mobilga mos kamera va legal katak indikatorlari.
+- Har biri keskin farqlanadigan procedural Staunton 3D donalari, haqiqiy otga yaqin bosh/tumshuq/quloq/yol geometriyasi, qora donalarni ajratadigan muvozanatli old yoritish, mobil kamera va legal katak indikatorlari.
 - Foydalanuvchi tanlaydigan klassik yashil 2D taxta yoki kinematik 3D arena; tanlov qurilmada eslab qolinadi va o‘yin davomida ham almashtiriladi.
-- 2D’da katakni to‘ldiradigan yirik, ichi to‘liq oq/qora siluetlar; 2D va 3D’da oxirgi yurish hamda shax ostidagi shoh katagi alohida yoritiladi.
+- 2D’da operatsion tizim shriftiga bog‘liq bo‘lmagan, yirik va to‘liq SVG Staunton siluetlari; ot, fil, shoh, vazir va turalar bir qarashda ajraladi. 2D va 3D’da oxirgi yurish hamda shax ostidagi shoh katagi alohida yoritiladi.
 - Jonli o‘yin davomida tarix bo‘ylab orqaga-oldinga ko‘rish, yurish yozuviga bosib sakrash va bir tegishda `LIVE` pozitsiyaga qaytish.
 - Optimistic yurish: dona server javobini kutmasdan darhol siljiydi, server rad etsa ishonchli holat avtomatik tiklanadi.
 - Urib olishda qurol, sakrash va yiqilish animatsiyasi; yurish va urishda klassik yog‘och dona zarbasi uslubidagi Web Audio tovushlari.
@@ -25,7 +25,9 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - Jonli tomoshabin rejimi, online ishtirokchilar soni va Telegram’da yuboriladigan xavfsiz `?watch=` havolasi.
 - Kinematik replay, revansh va brauzerda ishlaydigan ZAMIN Coach: aniqlik foizi, burilish nuqtalari va yurish tasnifi.
 - Har kuni almashadigan taktik ekspeditsiya, vaqt, puzzle reytingi, kunlik seriya va Army XP.
+- Professional yashil-krem, yong‘oq, slate va yuqori kontrast taxta palitralari; Staunton, Modern va Royal dona proporsiyalari; turnir, yumshoq va ko‘tarilgan ramka shakllari. Bular arena mavzusidan mustaqil tanlanadi va Supabase’da saqlanadi.
 - Registan, Cyber, Muzlik va Vulqon arenalari; avtomatik, yuqori sifat va batareyani tejash grafik rejimlari.
+- Foydalanuvchi ayni o‘yinda online bo‘lmasa, raqib yurishi, shax, durang taklifi, challenge qabul qilinishi va o‘yin natijasi Telegram bot orqali keladi; xabardagi tugma aynan o‘sha jangni ochadi.
 - XP bilan rivojlanadigan dona aura/zirhlari, clan yaratish yoki kod bilan kirish, clan XP va arena turnirlari.
 - Klassik FIDE rejimidan tashqari `Taxt uchun jang` (shoh markazga yetadi) va `Uch karra shax` variantlari.
 
