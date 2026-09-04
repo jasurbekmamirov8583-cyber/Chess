@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=9" />
+  <link rel="stylesheet" href="/static/style.css?v=10" />
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script type="importmap">
     {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"}}
@@ -83,7 +83,7 @@
       <header class="game-header">
         <button id="leave-game" class="back-btn">← <span>ARENA</span></button>
         <div class="game-id">JANG <b id="game-code">—</b><i id="live-indicator"></i><span id="presence-count"></span></div>
-        <div class="header-tools"><button id="mode-toggle" class="mode-toggle" title="2D/3D ko‘rinish">3D</button><button id="view-toggle" class="icon-btn" title="Taxtani aylantirish">◫</button><button id="panel-toggle" class="icon-btn" title="Yurishlar">☷</button></div>
+        <div class="header-tools"><button id="mode-toggle" class="mode-toggle" title="2D/3D ko‘rinish">3D</button><button id="appearance-toggle" class="icon-btn" title="Taxta va donalar">⚙</button><button id="view-toggle" class="icon-btn" title="Taxtani aylantirish">◫</button><button id="panel-toggle" class="icon-btn" title="Yurishlar">☷</button></div>
       </header>
       <div class="battle-layout">
         <div class="arena-column">
@@ -179,7 +179,12 @@
   </div>
 
   <div id="armory-modal" class="modal-backdrop hidden">
-    <div class="modal armory-modal"><button class="modal-close">×</button><span class="eyebrow">ARMORY</span><h2>O‘z arenangizni tanlang</h2><p>XP oshgani sari donalaringizda yangi toj, zirh va aura ochiladi.</p><div id="evolution-preview" class="evolution-preview"><b>♛</b><span id="evolution-name">Bronza qo‘shin</span><small id="evolution-xp">0 XP</small></div><div class="theme-grid"><button data-theme="registan"><i>☀</i><b>REGISTAN</b></button><button data-theme="cyber"><i>⌁</i><b>CYBER</b></button><button data-theme="ice"><i>❄</i><b>MUZLIK</b></button><button data-theme="volcano"><i>◆</i><b>VULQON</b></button></div><label class="performance-select">GRAFIKA REJIMI<select id="performance-mode"><option value="auto">Avtomatik</option><option value="quality">Yuqori sifat</option><option value="battery">Tejamkor</option></select></label></div>
+    <div class="modal armory-modal"><button class="modal-close">×</button><span class="eyebrow">TAHTA STUDIYASI</span><h2>Ko‘rinishni o‘zingiz boshqaring</h2><p>Taxta rangi, ramkasi va dona shakli bir-biridan mustaqil saqlanadi.</p>
+      <div class="appearance-section"><label>TAHTA PALETRASI</label><div class="palette-grid"><button data-board-palette="pro_green"><i class="palette-preview green"></i><b>PRO YASHIL</b><span>Krem · yashil</span></button><button data-board-palette="walnut"><i class="palette-preview walnut"></i><b>YONG‘OQ</b><span>Yog‘och klassika</span></button><button data-board-palette="slate"><i class="palette-preview slate"></i><b>SLATE</b><span>Sokin ko‘k</span></button><button data-board-palette="contrast"><i class="palette-preview contrast"></i><b>KONTRAST</b><span>Eng yaqqol</span></button></div></div>
+      <div class="appearance-section"><label>DONA SHAKLI</label><div class="piece-style-grid"><button data-piece-style="staunton"><i>♞</i><b>STAUNTON</b><span>Professional</span></button><button data-piece-style="modern"><i>♘</i><b>MODERN</b><span>Sodda va yirik</span></button><button data-piece-style="royal"><i>♛</i><b>ROYAL</b><span>Oltin aksent</span></button></div></div>
+      <div class="appearance-section"><label>TAHTA RAMKASI</label><div class="board-shape-grid"><button data-board-shape="tournament"><b>TURNIR</b><span>Tekis qirra</span></button><button data-board-shape="soft"><b>YUMSHOQ</b><span>Dumaloq qirra</span></button><button data-board-shape="floating"><b>FLOAT</b><span>Ko‘tarilgan taxta</span></button></div></div>
+      <details class="arena-details"><summary>ARENA VA GRAFIKA</summary><div id="evolution-preview" class="evolution-preview"><b>♛</b><span id="evolution-name">Bronza qo‘shin</span><small id="evolution-xp">0 XP</small></div><div class="theme-grid"><button data-theme="registan"><i>☀</i><b>REGISTAN</b></button><button data-theme="cyber"><i>⌁</i><b>CYBER</b></button><button data-theme="ice"><i>❄</i><b>MUZLIK</b></button><button data-theme="volcano"><i>◆</i><b>VULQON</b></button></div><label class="performance-select">GRAFIKA REJIMI<select id="performance-mode"><option value="auto">Avtomatik</option><option value="quality">Yuqori sifat</option><option value="battery">Tejamkor</option></select></label></details>
+    </div>
   </div>
 
   <div id="social-modal" class="modal-backdrop hidden">
@@ -189,6 +194,6 @@
   <div id="reconnect-banner" class="reconnect-banner hidden"><i></i><span>ALOQA QAYTA TIKLANMOQDA...</span></div>
 
   <div id="toast-stack" class="toast-stack"></div>
-  <script type="module" src="/static/app.js?v=9"></script>
+  <script type="module" src="/static/app.js?v=10"></script>
 </body>
 </html>

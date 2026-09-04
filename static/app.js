@@ -15,7 +15,9 @@ const state = {
   socket: null, socketPing: null, board: null, board3d: null, board2d: null, heroArena: null, boardMode: savedBoardMode==='2d'?'2d':'3d', chess: new Chess(),
   selected: null, legal: [], sound: true, mode: 'friend', aiLevel: 2,
   time: 600, increment: 3, variant: 'standard', shareUrl: '', moving: false, aiThinking: false, timeoutClaimed: false, pendingChallenge: '', realtimeLive: false,
-  premove: null, selectionMode: 'move', spectator: false, replaying: false, historyPly: null, resultSynced: false, resultPresented: false, theme: 'registan', performanceMode: 'auto', presence: {players:0,spectators:0}, puzzle: null, puzzleStartedAt: 0,
+  premove: null, selectionMode: 'move', spectator: false, replaying: false, historyPly: null, resultSynced: false, resultPresented: false,
+  theme: 'registan', performanceMode: 'auto', boardPalette: 'pro_green', pieceStyle: 'staunton', boardShape: 'tournament',
+  presence: {players:0,spectators:0}, puzzle: null, puzzleStartedAt: 0,
 };
 
 const PUZZLES=[
@@ -140,9 +142,11 @@ class ChessArena3D {
     const rim=new THREE.PointLight(0xffa65e,42,20);rim.position.set(-6,3,-3);this.scene.add(rim);
   }
   buildBoard() {
-    const palettes={registan:[0xffefd2,0x82a6ae,0xd18c3b],cyber:[0xe5fff9,0x63aaa5,0xee6be6],ice:[0xf7ffff,0x91bbcf,0x9bd8ff],volcano:[0xffe1bd,0xc38b76,0xff7540]},palette=palettes[state.theme]||palettes.registan;
-    const baseMat=new THREE.MeshPhysicalMaterial({color:0x526f79,roughness:.3,metalness:.5,clearcoat:.72});
-    const base=new THREE.Mesh(new THREE.BoxGeometry(9.45,.38,9.45),baseMat);base.position.y=-.28;base.receiveShadow=true;this.root.add(base);
+    const palettes={pro_green:[0xEEEED2,0x769656,0x6F4932],walnut:[0xF0D9B5,0xB58863,0x68452F],slate:[0xD8E4E7,0x66818E,0x3F535D],contrast:[0xF4F1E8,0x52705D,0x252F35]},palette=palettes[state.boardPalette]||palettes.pro_green;
+    const floating=state.boardShape==='floating',soft=state.boardShape==='soft',baseColor=floating?0x2b3336:palette[2];
+    const baseMat=new THREE.MeshPhysicalMaterial({color:baseColor,roughness:soft?.38:.3,metalness:floating?.48:.18,clearcoat:soft?.82:.55});
+    const base=new THREE.Mesh(new THREE.BoxGeometry(floating?9.18:9.45,floating?.22:.38,floating?9.18:9.45),baseMat);base.position.y=floating?-.21:-.28;base.receiveShadow=true;this.root.add(base);
+    if(floating){const shadowBase=new THREE.Mesh(new THREE.BoxGeometry(8.65,.13,8.65),new THREE.MeshStandardMaterial({color:0x111719,metalness:.6,roughness:.3}));shadowBase.position.y=-.39;this.root.add(shadowBase)}
     const rim=new THREE.Mesh(new THREE.BoxGeometry(8.72,.16,8.72),new THREE.MeshStandardMaterial({color:palette[2],metalness:.78,roughness:.28}));rim.position.y=-.035;this.root.add(rim);
     const light=new THREE.MeshPhysicalMaterial({color:palette[0],roughness:.42,metalness:.04,clearcoat:.28});
     const dark=new THREE.MeshPhysicalMaterial({color:palette[1],roughness:.36,metalness:.18,clearcoat:.4});
@@ -152,12 +156,14 @@ class ChessArena3D {
       mesh.position.set(f-3.5,.065,3.5-r);mesh.receiveShadow=true;mesh.userData.square=square;
       this.root.add(mesh); this.squares.push(mesh);
     }
-    const floor=new THREE.Mesh(new THREE.CircleGeometry(12,64),new THREE.MeshStandardMaterial({color:0x71909a,transparent:true,opacity:.96,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.y=-.49;floor.receiveShadow=true;this.scene.add(floor);
+    const floorColors={pro_green:0x464642,walnut:0x51463f,slate:0x3f4b50,contrast:0x3c4240};
+    const floor=new THREE.Mesh(new THREE.CircleGeometry(12,64),new THREE.MeshStandardMaterial({color:floorColors[state.boardPalette]||floorColors.pro_green,transparent:true,opacity:.96,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.y=-.49;floor.receiveShadow=true;this.scene.add(floor);
   }
   material(color) {
+    const modern=state.pieceStyle==='modern',royal=state.pieceStyle==='royal';
     return color==='w'
-      ? new THREE.MeshPhysicalMaterial({color:0xf1e5ce,roughness:.22,metalness:.08,clearcoat:1,clearcoatRoughness:.11})
-      : new THREE.MeshPhysicalMaterial({color:0x101820,emissive:0x3a6275,emissiveIntensity:.62,roughness:.24,metalness:.34,clearcoat:1,clearcoatRoughness:.08});
+      ? new THREE.MeshPhysicalMaterial({color:modern?0xf7f7f1:0xf0e6d2,roughness:modern?.34:.22,metalness:royal?.2:.06,clearcoat:royal?1:.68,clearcoatRoughness:.12})
+      : new THREE.MeshPhysicalMaterial({color:modern?0x20282c:0x151b1e,emissive:0x3e5963,emissiveIntensity:modern?.28:.38,roughness:modern?.32:.24,metalness:royal?.42:.18,clearcoat:royal?1:.7,clearcoatRoughness:.1});
   }
   accent(color='w') { return new THREE.MeshStandardMaterial({color:color==='w'?0xe7a943:0xe66d42,metalness:.9,roughness:.18}); }
   gold() { return this.accent('w'); }
@@ -175,11 +181,14 @@ class ChessArena3D {
       this.lathe([[.3,.31],[.28,.42],[.25,.78],[.33,.87],[.38,.96]],m,g,24);this.ring(.33,.88,accent,g,.032);this.part(new THREE.CylinderGeometry(.39,.37,.2,8),m,1.04,g);
       for(let i=0;i<4;i++){const tooth=this.part(new THREE.BoxGeometry(.19,.2,.2),m,1.22,g);tooth.position.x=Math.cos(i*Math.PI/2+.4)*.27;tooth.position.z=Math.sin(i*Math.PI/2+.4)*.27;}
     } else if(type==='n'){
-      this.lathe([[.29,.31],[.3,.43],[.24,.52],[.22,.61]],m,g,28);
-      const shape=new THREE.Shape();shape.moveTo(-.28,-.48);shape.bezierCurveTo(-.36,-.16,-.27,.1,-.08,.25);shape.bezierCurveTo(.03,.36,.04,.54,-.04,.68);shape.lineTo(.14,.59);shape.bezierCurveTo(.33,.38,.35,.05,.26,-.18);shape.lineTo(.43,-.27);shape.lineTo(.23,-.4);shape.closePath();
-      const horse=new THREE.Mesh(new THREE.ExtrudeGeometry(shape,{depth:.33,bevelEnabled:true,bevelSegments:3,steps:1,bevelSize:.045,bevelThickness:.045}),m);horse.geometry.center();horse.position.set(-.02,1.04,-.165);horse.castShadow=true;g.add(horse);
-      const mane=this.part(new THREE.BoxGeometry(.07,.66,.38),accent,1.13,g);mane.rotation.z=-.14;mane.position.x=.16;
-      for(const side of [-1,1]){const ear=this.part(new THREE.ConeGeometry(.055,.24,10),m,1.63,g);ear.position.x=.02;ear.position.z=side*.11;ear.rotation.z=-.12;}
+      this.lathe([[.29,.31],[.31,.43],[.27,.54],[.23,.64]],m,g,32);
+      const neck=this.part(new THREE.CylinderGeometry(.18,.27,.72,28),m,1.02,g);neck.rotation.z=-.28;neck.position.x=-.1;
+      const head=this.part(new THREE.SphereGeometry(.3,30,22),m,1.39,g);head.scale.set(1.18,.78,.72);head.position.x=-.24;
+      const muzzle=this.part(new THREE.SphereGeometry(.2,26,18),m,1.3,g);muzzle.scale.set(1.35,.62,.72);muzzle.position.x=-.47;
+      for(const side of [-1,1]){const ear=this.part(new THREE.ConeGeometry(.075,.29,14),m,1.68,g);ear.position.set(-.13,1.68,side*.13);ear.rotation.z=-.16}
+      const mane=this.part(new THREE.BoxGeometry(.09,.66,.34),accent,1.25,g);mane.rotation.z=-.28;mane.position.x=.08;
+      for(const side of [-1,1]){const eye=this.part(new THREE.SphereGeometry(.035,12,9),accent,1.48,g);eye.position.set(-.42,1.48,side*.205)}
+      const nostril=this.part(new THREE.SphereGeometry(.027,10,8),accent,1.33,g);nostril.position.set(-.64,1.33,.11);
     } else if(type==='b'){
       this.lathe([[.29,.31],[.3,.4],[.18,.58],[.15,.82],[.23,.91]],m,g);this.ring(.225,.91,accent,g,.032);
       const crown=this.part(new THREE.SphereGeometry(.25,30,22),m,1.16,g);crown.scale.set(.86,1.25,.86);const slash=this.part(new THREE.BoxGeometry(.055,.46,.3),accent,1.19,g);slash.rotation.z=-.48;this.part(new THREE.SphereGeometry(.065,16,12),accent,1.49,g);
@@ -194,7 +203,11 @@ class ChessArena3D {
     const evolution=Math.floor(Number(state.profile?.army_xp||0)/120)+1;
     if(evolution>=3&&type!=='p'){const aura=this.ring(.43,.08,new THREE.MeshBasicMaterial({color:evolution>=6?0x69f2ff:0xffc766,transparent:true,opacity:.34}),g,.018);aura.userData.aura=true}
     if(evolution>=5&&['q','k'].includes(type)){const gem=this.part(new THREE.OctahedronGeometry(.075),accent,type==='k'?1.91:1.7,g);gem.rotation.y=.5}
-    g.scale.setScalar(type==='p'?.73:.71);g.rotation.y=color==='b'?Math.PI:0;
+    const baseScale=type==='p'?.73:.71;
+    if(state.pieceStyle==='modern')g.scale.set(baseScale*1.04,baseScale*.94,baseScale*1.04);
+    else if(state.pieceStyle==='royal')g.scale.set(baseScale*.97,baseScale*1.08,baseScale*.97);
+    else g.scale.setScalar(baseScale);
+    g.rotation.y=color==='b'?Math.PI:0;
     g.traverse(o=>{o.userData.pieceRoot=g}); return g;
   }
   squarePosition(square) { return new THREE.Vector3(square.charCodeAt(0)-97-3.5,.14,3.5-(Number(square[1])-1)); }
@@ -214,7 +227,7 @@ class ChessArena3D {
     removeAt(to);
     if(mover.userData.type==='p'&&from[0]!==to[0]&&!targetOccupied)removeAt(`${to[0]}${from[1]}`);
     if(mover.userData.type==='k'&&Math.abs(from.charCodeAt(0)-to.charCodeAt(0))===2){const kingSide=to[0]==='g',rookFrom=`${kingSide?'h':'a'}${from[1]}`,rookTo=`${kingSide?'f':'d'}${from[1]}`,rook=this.pieces.get(rookFrom);if(rook){this.pieces.delete(rookFrom);this.pieces.set(rookTo,rook);rook.position.copy(this.squarePosition(rookTo));rook.userData.square=rookTo}}
-    this.pieces.delete(from);mover.position.copy(this.squarePosition(to));mover.rotation.z=0;mover.scale.setScalar(mover.userData.type==='p'?.73:.71);mover.userData.square=to;this.pieces.set(to,mover);
+    this.pieces.delete(from);mover.position.copy(this.squarePosition(to));mover.rotation.z=0;const baseScale=mover.userData.type==='p'?.73:.71;if(state.pieceStyle==='modern')mover.scale.set(baseScale*1.04,baseScale*.94,baseScale*1.04);else if(state.pieceStyle==='royal')mover.scale.set(baseScale*.97,baseScale*1.08,baseScale*.97);else mover.scale.setScalar(baseScale);mover.userData.square=to;this.pieces.set(to,mover);
     if(uci[4]){const promoted={type:uci[4],color:mover.userData.color};this.root.remove(mover);this.release(mover);const model=this.piece(promoted.type,promoted.color);model.position.copy(this.squarePosition(to));model.userData={...model.userData,square:to,color:promoted.color,type:promoted.type};this.root.add(model);this.pieces.set(to,model)}
   }
   orient(color='white') {
@@ -261,13 +274,25 @@ class ChessArena3D {
   finishEffect(kind,loserColor=''){
     const loser=[...this.pieces.values()].find(piece=>piece.userData.type==='k'&&piece.userData.color===loserColor);
     if(!loser||kind==='draw')return;
-    const start=performance.now(),direction=loserColor==='w'?-1:1,baseScale=loser.scale.x;
-    const animate=time=>{const p=Math.min(1,(time-start)/620),ease=1-Math.pow(1-p,3);loser.rotation.z=direction*1.18*ease;loser.position.y=.14-.12*ease;loser.scale.setScalar(baseScale*(1-.07*ease));if(p<1)requestAnimationFrame(animate)};
+    const start=performance.now(),direction=loserColor==='w'?-1:1,baseScale=loser.scale.clone();
+    const animate=time=>{const p=Math.min(1,(time-start)/620),ease=1-Math.pow(1-p,3),factor=1-.07*ease;loser.rotation.z=direction*1.18*ease;loser.position.y=.14-.12*ease;loser.scale.copy(baseScale).multiplyScalar(factor);if(p<1)requestAnimationFrame(animate)};
     requestAnimationFrame(animate);
   }
   resize(){const w=this.container.clientWidth,h=this.container.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h,false);this.camera.aspect=w/h;this.camera.updateProjectionMatrix();if(!this.hero)this.orient(this.viewColor||'white')}
   dispose(){this.disposed=true;this.active=false;this.resizeObserver?.disconnect();this.controls?.dispose();this.release(this.scene);this.renderer.dispose();this.renderer.domElement.remove()}
   loop(){if(this.disposed)return;requestAnimationFrame(()=>this.loop());if(!this.active)return;this.controls.update();if(this.hero)this.root.position.y=Math.sin(performance.now()/900)*.04;this.renderer.render(this.scene,this.camera)}
+}
+
+function pieceSvg(type,color){
+  const shapes={
+    p:'<circle class="piece-body" cx="50" cy="25" r="13"/><path class="piece-body" d="M37 42h26c-1 12-6 17-10 21h12l7 14H28l7-14h12c-5-4-9-9-10-21Z"/><path class="piece-line" d="M34 63h32M28 78h44"/>',
+    r:'<path class="piece-body" d="M25 17h11v9h9v-9h10v9h9v-9h11v20l-8 7 4 29 8 8H21l8-8 4-29-8-7Z"/><path class="piece-line" d="M30 39h40M29 72h42M22 81h56"/>',
+    n:'<path class="piece-body" d="M27 79h51l-8-11-5-30C62 23 54 15 39 12l4 11C32 28 27 39 25 52l17-10 11 5-5 9c-9 7-15 13-21 23Z"/><path class="piece-line" d="M27 79h51M42 42c5-5 11-8 18-9"/><circle class="piece-accent" cx="48" cy="29" r="3"/>',
+    b:'<path class="piece-body" d="M50 12c10 9 16 19 12 29-2 6-7 10-12 14 9 2 15 8 16 18l10 8H24l10-8c1-10 7-16 16-18-7-5-12-11-12-19 0-9 5-17 12-24Z"/><path class="piece-line" d="m45 25 12 17M34 72h32M24 81h52"/>',
+    q:'<circle class="piece-body" cx="22" cy="22" r="5"/><circle class="piece-body" cx="40" cy="15" r="5"/><circle class="piece-body" cx="60" cy="15" r="5"/><circle class="piece-body" cx="78" cy="22" r="5"/><path class="piece-body" d="m22 28 11 33h34l11-33-18 19-10-25-10 25Z"/><path class="piece-body" d="M31 62h38l5 11 7 8H19l7-8Z"/><path class="piece-line" d="M27 72h46M20 81h60"/>',
+    k:'<path class="piece-body" d="M46 11h8v10h10v8H54v11c10 3 16 11 15 21l7 12 6 8H18l6-8 7-12c-1-10 5-18 15-21V29H36v-8h10Z"/><path class="piece-line" d="M31 61h38M24 73h52M18 81h64"/>'
+  };
+  return `<svg class="piece-2d ${color==='w'?'white':'black'}" viewBox="0 0 100 100" aria-hidden="true"><g>${shapes[type]||shapes.p}</g></svg>`;
 }
 
 class ChessBoard2D {
@@ -280,9 +305,8 @@ class ChessBoard2D {
   commitMove(uci,fen){this.load(fen)}
   showPositionHighlights(lastMove='',checkSquare=''){this.lastMove=lastMove;this.checkSquare=checkSquare;this.render()}
   render(){
-    const chess=new Chess(this.fen),files=this.viewColor==='black'?[...'hgfedcba']:[...'abcdefgh'],ranks=this.viewColor==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
-    const glyph={wp:'♟',wn:'♞',wb:'♝',wr:'♜',wq:'♛',wk:'♚',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};let html='';
-    for(const rank of ranks)for(const file of files){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1,isEdgeFile=file===files[0],isEdgeRank=rank===ranks.at(-1),classes=['square-2d',dark?'dark':'light'];if(this.lastMove&&square===this.lastMove.slice(0,2))classes.push('last-from');if(this.lastMove&&square===this.lastMove.slice(2,4))classes.push('last-to');if(square===this.checkSquare)classes.push('in-check');if(square===this.selected)classes.push('selected');if(this.destinations.includes(square))classes.push(piece?'capture':'legal');const fallen=piece?.type==='k'&&piece.color===this.resultEffect?.loserColor;html+=`<button type="button" class="${classes.join(' ')}" data-square="${square}" aria-label="${square}">${piece?`<span class="piece-2d ${piece.color==='w'?'white':'black'}${fallen?' result-loser':''}">${glyph[piece.color+piece.type]}</span>`:''}${isEdgeFile?`<small class="coord-2d coord-rank">${rank}</small>`:''}${isEdgeRank?`<small class="coord-2d coord-file">${file}</small>`:''}</button>`}
+    const chess=new Chess(this.fen),files=this.viewColor==='black'?[...'hgfedcba']:[...'abcdefgh'],ranks=this.viewColor==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];let html='';
+    for(const rank of ranks)for(const file of files){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1,isEdgeFile=file===files[0],isEdgeRank=rank===ranks.at(-1),classes=['square-2d',dark?'dark':'light'];if(this.lastMove&&square===this.lastMove.slice(0,2))classes.push('last-from');if(this.lastMove&&square===this.lastMove.slice(2,4))classes.push('last-to');if(square===this.checkSquare)classes.push('in-check');if(square===this.selected)classes.push('selected');if(this.destinations.includes(square))classes.push(piece?'capture':'legal');const fallen=piece?.type==='k'&&piece.color===this.resultEffect?.loserColor;html+=`<button type="button" class="${classes.join(' ')}" data-square="${square}" aria-label="${square}">${piece?pieceSvg(piece.type,piece.color).replace('piece-2d ',`piece-2d${fallen?' result-loser':''} `):''}${isEdgeFile?`<small class="coord-2d coord-rank">${rank}</small>`:''}${isEdgeRank?`<small class="coord-2d coord-file">${file}</small>`:''}</button>`}
     this.element.innerHTML=html;
   }
   showMoves(selected,destinations=[]){this.selected=selected;this.destinations=destinations;this.render()}
@@ -369,7 +393,9 @@ async function initialize() {
     // The longer API session token remains only in this page's memory.
     if(launchTicket) history.replaceState(null,'',location.pathname);
     Object.assign(state,{token:session.token||state.token,user:session.user,profile:session.profile});storeValue(SESSION_STORAGE_KEY,state.token);
-    state.theme=session.profile?.equipped_theme||'registan';state.performanceMode=session.profile?.performance_mode||'auto';applyAppearance();renderProfile(); startHero(); bindUI(); setBoardMode(state.boardMode,{render:false});
+    state.theme=session.profile?.equipped_theme||storedValue('zamin-theme')||'registan';state.performanceMode=session.profile?.performance_mode||storedValue('zamin-performance')||'auto';
+    state.boardPalette=session.profile?.board_palette||storedValue('zamin-board-palette')||'pro_green';state.pieceStyle=session.profile?.piece_style||storedValue('zamin-piece-style')||'staunton';state.boardShape=session.profile?.board_shape||storedValue('zamin-board-shape')||'tournament';
+    applyAppearance();renderProfile(); startHero(); bindUI(); setBoardMode(state.boardMode,{render:false});
     $('#app').classList.remove('hidden'); await sleep(350); $('#boot').classList.add('out'); setTimeout(()=>$('#boot').remove(),700);
     if(!session.registered) openModal('#onboarding'); else await loadRecent();
     const startParam=tg?.initDataUnsafe?.start_param||fragmentStartParam||new URLSearchParams(location.search).get('startapp');
@@ -401,6 +427,7 @@ function bindUI() {
   $('#share-challenge').onclick=shareChallenge; $('#copy-challenge').onclick=copyChallenge;
   $('#leave-game').onclick=leaveGame;$('#result-home').onclick=leaveGame;$('#result-dismiss').onclick=()=>$('#result-modal').classList.add('hidden');
   $('#mode-toggle').onclick=()=>setBoardMode(state.boardMode==='2d'?'3d':'2d',{render:true,notify:true});
+  $('#appearance-toggle').onclick=()=>{renderArmory();openModal('#armory-modal')};
   $('#view-toggle').onclick=()=>state.board?.orient(state.board.viewColor==='white'?'black':'white');
   $('#panel-toggle').onclick=()=>$('.game-panel').classList.toggle('open');
   $$('[data-panel-open]').forEach(btn=>btn.onclick=()=>$('.game-panel').classList.add('open'));
@@ -409,8 +436,11 @@ function bindUI() {
   $$('[data-sound-toggle]').forEach(btn=>btn.onclick=()=>{state.sound=!state.sound;$$('[data-sound-toggle] b').forEach(icon=>icon.textContent=state.sound?'◖':'×');if(state.sound)audio.move();toast(state.sound?'Ovoz yoqildi':'Ovoz o‘chirildi')});
   $$('[data-action]').forEach(btn=>btn.onclick=()=>gameAction(btn.dataset.action));
   $$('[data-feature]').forEach(btn=>btn.onclick=()=>openFeature(btn.dataset.feature));
-  $$('.theme-grid button').forEach(btn=>btn.onclick=()=>saveAppearance(btn.dataset.theme));
-  $('#performance-mode').onchange=()=>saveAppearance(state.theme,$('#performance-mode').value);
+  $$('.theme-grid button').forEach(btn=>btn.onclick=()=>saveAppearance({theme:btn.dataset.theme}));
+  $$('[data-board-palette]').forEach(btn=>btn.onclick=()=>saveAppearance({boardPalette:btn.dataset.boardPalette}));
+  $$('[data-piece-style]').forEach(btn=>btn.onclick=()=>saveAppearance({pieceStyle:btn.dataset.pieceStyle}));
+  $$('[data-board-shape]').forEach(btn=>btn.onclick=()=>saveAppearance({boardShape:btn.dataset.boardShape}));
+  $('#performance-mode').onchange=()=>saveAppearance({performanceMode:$('#performance-mode').value});
   $('#puzzle-hint').onclick=()=>toast(state.puzzle?.hint||'Markazni tekshiring');
   $('#create-clan').onclick=createClan;$('#create-tournament').onclick=createTournament;
   $('#join-clan').onsubmit=joinClan;
@@ -427,16 +457,24 @@ function renderProfile(){
   const p=state.profile||{},xp=Number(p.army_xp||0),level=Math.floor(xp/120)+1;$('#profile-rating').textContent=p.rating||1200;$('#games-count').textContent=p.games_played||0;$('#wins-count').textContent=p.wins||0;$('#losses-count').textContent=p.losses||0;$('#draws-count').textContent=p.draws||0;$('#rank-needed').textContent=Math.max(0,1400-(p.rating||1200));$('#army-level').textContent=level;$('#puzzle-streak').textContent=`${p.puzzle_streak||0} kunlik seriya`;$('#xp-progress').style.width=`${xp%120/1.2}%`;
 }
 
-function applyAppearance(){document.body.classList.remove('theme-registan','theme-cyber','theme-ice','theme-volcano','performance-auto','performance-quality','performance-battery');document.body.classList.add(`theme-${state.theme}`,`performance-${state.performanceMode}`);$$('[data-theme]').forEach(button=>button.classList.toggle('active',button.dataset.theme===state.theme));if($('#performance-mode'))$('#performance-mode').value=state.performanceMode}
-async function saveAppearance(theme=state.theme,performance=state.performanceMode){state.theme=theme;state.performanceMode=performance;applyAppearance();if(state.board3d){state.board3d.dispose();state.board3d=null;if(state.game&&state.boardMode==='3d')setBoardMode('3d',{render:true})}if(state.heroArena){state.heroArena.dispose();state.heroArena=null;if(!state.game)startHero()}try{const data=await api('/api/preferences',{method:'POST',body:JSON.stringify({theme,performance_mode:performance})});state.profile=data.profile;renderProfile();toast('Arena saqlandi','good')}catch(e){toast(e.message,'error')}}
+function applyAppearance(){
+  const body=document.body,groups=['theme-registan','theme-cyber','theme-ice','theme-volcano','performance-auto','performance-quality','performance-battery','palette-pro_green','palette-walnut','palette-slate','palette-contrast','pieces-staunton','pieces-modern','pieces-royal','shape-tournament','shape-soft','shape-floating'];
+  body.classList.remove(...groups);body.classList.add(`theme-${state.theme}`,`performance-${state.performanceMode}`,`palette-${state.boardPalette}`,`pieces-${state.pieceStyle}`,`shape-${state.boardShape}`);
+  $$('[data-theme]').forEach(button=>button.classList.toggle('active',button.dataset.theme===state.theme));$$('[data-board-palette]').forEach(button=>button.classList.toggle('active',button.dataset.boardPalette===state.boardPalette));$$('[data-piece-style]').forEach(button=>button.classList.toggle('active',button.dataset.pieceStyle===state.pieceStyle));$$('[data-board-shape]').forEach(button=>button.classList.toggle('active',button.dataset.boardShape===state.boardShape));if($('#performance-mode'))$('#performance-mode').value=state.performanceMode;
+}
+async function saveAppearance(patch={}){
+  Object.assign(state,patch);storeValue('zamin-theme',state.theme);storeValue('zamin-performance',state.performanceMode);storeValue('zamin-board-palette',state.boardPalette);storeValue('zamin-piece-style',state.pieceStyle);storeValue('zamin-board-shape',state.boardShape);applyAppearance();
+  if(state.board2d)state.board2d.render();if(state.board3d){state.board3d.dispose();state.board3d=null;if(state.game&&state.boardMode==='3d')setBoardMode('3d',{render:true})}if(state.heroArena){state.heroArena.dispose();state.heroArena=null;if(!state.game)startHero()}
+  try{const data=await api('/api/preferences',{method:'POST',body:JSON.stringify({theme:state.theme,performance_mode:state.performanceMode,board_palette:state.boardPalette,piece_style:state.pieceStyle,board_shape:state.boardShape})});state.profile=data.profile;renderProfile();toast('Ko‘rinish saqlandi','good')}catch(e){toast(`${e.message}. Tanlov ushbu qurilmada saqlandi.`,'error')}
+}
 
 function openFeature(feature){if(feature==='puzzle')openDailyPuzzle();else if(feature==='armory'){renderArmory();openModal('#armory-modal')}else if(feature==='social'){openModal('#social-modal');loadSocial()}}
 function renderArmory(){const xp=Number(state.profile?.army_xp||0),level=Math.floor(xp/120)+1,names=['Bronza qo‘shin','Kumush soqchilar','Oltin legion','Zamin elitalari','Afsonaviy saltanat'];$('#evolution-name').textContent=names[Math.min(names.length-1,Math.floor((level-1)/2))];$('#evolution-xp').textContent=`${xp} XP · ${level}-daraja`;applyAppearance()}
 
 function dailyPuzzle(){const day=Math.floor(Date.now()/86400000);return PUZZLES[day%PUZZLES.length]}
 function puzzleMarkup(chess,selected=''){
-  const glyph={wp:'♟',wn:'♞',wb:'♝',wr:'♜',wq:'♛',wk:'♚',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};let html='';
-  for(const rank of [8,7,6,5,4,3,2,1])for(const file of 'abcdefgh'){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1;html+=`<button type="button" class="square-2d ${dark?'dark':'light'} ${selected===square?'selected':''}" data-puzzle-square="${square}">${piece?`<span class="piece-2d ${piece.color==='w'?'white':'black'}">${glyph[piece.color+piece.type]}</span>`:''}</button>`}return html;
+  let html='';
+  for(const rank of [8,7,6,5,4,3,2,1])for(const file of 'abcdefgh'){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1;html+=`<button type="button" class="square-2d ${dark?'dark':'light'} ${selected===square?'selected':''}" data-puzzle-square="${square}">${piece?pieceSvg(piece.type,piece.color):''}</button>`}return html;
 }
 function openDailyPuzzle(){state.puzzle={...dailyPuzzle(),selected:'',chess:new Chess(dailyPuzzle().fen),completed:false};state.puzzleStartedAt=Date.now();$('#puzzle-title').textContent=state.puzzle.title;$('#puzzle-task').textContent='Oqlar yuradi. Eng kuchli yurishni toping.';$('#puzzle-modal-streak').textContent=state.profile?.puzzle_streak||0;renderPuzzle();openModal('#puzzle-modal')}
 function renderPuzzle(){$('#puzzle-board').innerHTML=puzzleMarkup(state.puzzle.chess,state.puzzle.selected);$$('[data-puzzle-square]').forEach(square=>square.onclick=()=>playPuzzleSquare(square.dataset.puzzleSquare))}
@@ -679,7 +717,7 @@ function shareSpectator(){
 async function leaveGame(){
   storeValue(ACTIVE_GAME_KEY,'');if(state.socketPing){clearInterval(state.socketPing);state.socketPing=null}if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null}state.realtimeLive=false;state.replaying=false;state.historyPly=null;state.game=null;if(state.board3d)state.board3d.active=false;
   if(state.spectator){tg?.close?.();if(!tg)setTimeout(()=>{location.href='/'},50);return}
-  if(state.heroArena)state.heroArena.active=true;$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');$('#board-stage').classList.remove('result-win','result-loss','result-draw');await loadRecent();
+  if(state.heroArena)state.heroArena.active=true;else startHero();$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');$('#board-stage').classList.remove('result-win','result-loss','result-draw');await loadRecent();
 }
 async function loadRecent(){
   if(!state.token)return;try{const data=await api('/api/me/games'),list=$('#recent-list');if(data.profile){state.profile=data.profile;renderProfile()}if(!data.games.length){list.innerHTML='<div class="empty-state"><span>♟</span><p>Hali janglar yo‘q.<br>Birinchi yurishni siz boshlang.</p></div>';return}list.innerHTML=data.games.map(g=>{const mine=g.my_color,won=g.status===`${mine}_won`,lost=g.status===`${mine==='white'?'black':'white'}_won`,label=g.status==='active'?'DAVOM ETADI':g.status==='waiting'?'KUTILMOQDA':g.status==='aborted'?'BEKOR':won?'G‘ALABA':lost?'MAG‘LUBIYAT':'DURANG';return `<div class="recent-item" data-game="${g.id}"><span class="recent-icon">${g.mode==='ai'?'◈':'⚔'}</span><span><b>${escapeHtml(mine==='white'?(g.black_name||'Challenge'):(g.white_name||'Raqib'))}</b><small>${g.move_history?.length||0} YURISH · ${g.time_control/60} MIN</small></span><em class="status-tag ${won?'win':lost?'loss':''}">${label}</em></div>`}).join('');$$('[data-game]',list).forEach(el=>el.onclick=async()=>{try{const d=await api(`/api/games/${el.dataset.game}`);await enterGame(d.game)}catch(e){toast(e.message,'error')}})}catch(e){toast(e.message,'error')}
