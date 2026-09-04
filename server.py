@@ -8,13 +8,12 @@ import logging
 import os
 import random
 import re
-import secrets
 import string
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import chess
 import httpx
@@ -24,6 +23,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket,
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -72,8 +72,34 @@ APP_SECRET = os.getenv("APP_SECRET", "") or (
 )
 DEV_AUTH = os.getenv("DEV_AUTH", "false").lower() == "true"
 
-app = FastAPI(title="Zamin 3D Chess", version="1.0.0")
+app = FastAPI(title="Zamin 3D Chess", version="1.2.0")
+app.add_middleware(GZipMiddleware, minimum_size=900, compresslevel=5)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+
+_outbound_client: httpx.AsyncClient | None = None
+
+
+def outbound_client() -> httpx.AsyncClient:
+    """One keep-alive pool for Supabase and Telegram instead of a TLS handshake per call."""
+    global _outbound_client
+    if _outbound_client is None or _outbound_client.is_closed:
+        _outbound_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(12.0, connect=6.0),
+            limits=httpx.Limits(max_connections=24, max_keepalive_connections=12, keepalive_expiry=30.0),
+        )
+    return _outbound_client
+
+
+@app.middleware("http")
+async def response_optimizations(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+    elif request.url.path == "/":
+        response.headers["Cache-Control"] = "no-cache"
+    if "X-Content-Type-Options" not in response.headers:
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 class Store:
@@ -107,8 +133,7 @@ class Store:
         if body is not None:
             request_args["json"] = body
         try:
-            async with httpx.AsyncClient(timeout=12) as client:
-                response = await client.request(method, f"{self.base}/{table}", **request_args)
+            response = await outbound_client().request(method, f"{self.base}/{table}", **request_args)
         except httpx.HTTPError as exc:
             log.error("Supabase connection failed: %s", type(exc).__name__)
             raise HTTPException(502, "Supabase bilan ulanishda xato") from exc
@@ -197,12 +222,22 @@ class GameSockets:
         for websocket in dead:
             self.disconnect(game_id, websocket)
 
+    async def broadcast_event(self, game_id: str, payload: dict[str, Any]) -> None:
+        dead: list[WebSocket] = []
+        for websocket in list(self.rooms.get(game_id, {})):
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                dead.append(websocket)
+        for websocket in dead:
+            self.disconnect(game_id, websocket)
+
 
 game_sockets = GameSockets()
+reaction_limits: dict[tuple[str, str], float] = {}
 pending_names: dict[str, str] = {}
 awaiting_name: set[str] = set()
 pending_challenges: dict[str, str] = {}
-launch_tickets: dict[str, tuple[str, float]] = {}
 
 
 class SessionRequest(BaseModel):
@@ -218,9 +253,12 @@ class ProfileRequest(BaseModel):
 class GameCreateRequest(BaseModel):
     mode: Literal["friend", "ai"]
     variant: Literal["standard", "kingofthehill", "threecheck"] = "standard"
-    time_control: int = Field(default=600, ge=60, le=3600)
+    time_control: int = Field(default=600, ge=60, le=604800)
     increment: int = Field(default=3, ge=0, le=30)
     ai_level: int = Field(default=2, ge=1, le=4)
+    casual: bool = False
+    series_best_of: Literal[1, 3, 5] = 3
+    opponent_id: str | None = Field(default=None, pattern=r"^\d{1,20}$")
 
 
 class MoveRequest(BaseModel):
@@ -229,7 +267,17 @@ class MoveRequest(BaseModel):
 
 
 class ActionRequest(BaseModel):
-    action: Literal["resign", "offer_draw", "accept_draw", "decline_draw", "abort", "claim_timeout"]
+    action: Literal[
+        "resign", "offer_draw", "accept_draw", "decline_draw", "abort", "claim_timeout",
+        "request_takeback", "accept_takeback", "decline_takeback",
+    ]
+
+
+class ReactionRequest(BaseModel):
+    emoji: Literal["👏", "⚔️", "😮", "🤝", "🔥", "GG"]
+
+
+ALLOWED_REACTIONS = {"👏", "⚔️", "😮", "🤝", "🔥", "GG"}
 
 
 class PreferencesRequest(BaseModel):
@@ -313,13 +361,14 @@ def make_token(user: dict[str, Any]) -> str:
 
 
 def make_launch_ticket(user_id: str) -> str:
-    current = now().timestamp()
-    for value, (_, expires_at) in list(launch_tickets.items()):
-        if expires_at <= current:
-            launch_tickets.pop(value, None)
-    ticket = secrets.token_urlsafe(24)
-    launch_tickets[ticket] = (str(user_id), current + 600)
-    return ticket
+    """Short-lived signed ticket that survives Render restarts and multiple workers."""
+    if not APP_SECRET:
+        raise HTTPException(503, "APP_SECRET sozlanmagan")
+    stamp = now()
+    return jwt.encode({
+        "sub": str(user_id), "telegram_id": str(user_id), "aud": "zamin-launch",
+        "iat": int(stamp.timestamp()), "exp": int((stamp + timedelta(minutes=10)).timestamp()),
+    }, APP_SECRET, algorithm="HS256")
 
 
 def launch_url(user_id: str, challenge_code: str = "") -> str:
@@ -330,10 +379,12 @@ def launch_url(user_id: str, challenge_code: str = "") -> str:
 
 
 def user_from_launch_ticket(ticket: str) -> dict[str, Any]:
-    record = launch_tickets.pop(ticket, None)
-    if not record or record[1] <= now().timestamp():
+    try:
+        record = jwt.decode(ticket, APP_SECRET, algorithms=["HS256"], audience="zamin-launch")
+        return {"id": int(record["telegram_id"])}
+    except Exception as exc:
         raise HTTPException(401, "Web App havolasi eskirgan. Botga /start yuborib yangi tugmani bosing.")
-    return {"id": int(record[0])}
+    
 
 
 def decode_api_token(token: str) -> dict[str, str]:
@@ -361,8 +412,35 @@ def game_for_player(game: dict[str, Any], user_id: str) -> str:
 
 
 def public_game(game: dict[str, Any], user_id: str) -> dict[str, Any]:
-    result = dict(game)
-    result["my_color"] = game_for_player(game, user_id)
+    """Participant view: enough to render/play, without Telegram IDs or server flags."""
+    my_color = game_for_player(game, user_id)
+    allowed = {
+        "id", "code", "mode", "variant", "white_name", "black_name", "ai_level",
+        "fen", "status", "result_reason", "turn", "time_control", "increment",
+        "white_ms", "black_ms", "last_move_at", "version", "white_checks",
+        "black_checks", "spectators_allowed", "tournament_id", "created_at", "updated_at",
+        "ply_count", "casual", "correspondence", "series_id", "series_best_of", "series_game_no",
+    }
+    result = {key: value for key, value in game.items() if key in allowed}
+    result["move_history"] = [
+        {"uci": move.get("uci", ""), "san": move.get("san", "")}
+        for move in game.get("move_history", [])
+    ]
+    offer_by = str(game.get("draw_offer_by") or "")
+    result["draw_offer_by"] = (
+        "mine" if offer_by == str(user_id) else "opponent" if offer_by else None
+    )
+    takeback_by = str(game.get("takeback_by") or "")
+    result["takeback_by"] = (
+        "mine" if takeback_by == str(user_id) else "opponent" if takeback_by else None
+    )
+    raw_score = game.get("series_score") if isinstance(game.get("series_score"), dict) else {}
+    opponent_id = str(game.get("black_id") if my_color == "white" else game.get("white_id") or "")
+    result["series_score"] = {
+        "mine": int(raw_score.get(str(user_id), 0)),
+        "opponent": int(raw_score.get(opponent_id, 0)),
+    }
+    result["my_color"] = my_color
     return result
 
 
@@ -372,13 +450,19 @@ def spectator_game(game: dict[str, Any]) -> dict[str, Any]:
         "id", "code", "mode", "variant", "white_name", "black_name", "ai_level",
         "fen", "move_history", "status", "result_reason", "turn", "time_control",
         "increment", "white_ms", "black_ms", "last_move_at", "version",
-        "white_checks", "black_checks", "created_at", "updated_at",
+        "white_checks", "black_checks", "created_at", "updated_at", "ply_count",
+        "casual", "correspondence", "series_id", "series_best_of", "series_game_no",
     }
     result = {key: value for key, value in game.items() if key in allowed}
     result["move_history"] = [
         {"uci": move.get("uci", ""), "san": move.get("san", "")}
         for move in game.get("move_history", [])
     ]
+    raw_score = game.get("series_score") if isinstance(game.get("series_score"), dict) else {}
+    result["series_score"] = {
+        "white": int(raw_score.get(str(game.get("white_id") or ""), 0)),
+        "black": int(raw_score.get(str(game.get("black_id") or ""), 0)),
+    }
     result.update(my_color="white", spectator=True)
     return result
 
@@ -397,6 +481,40 @@ async def require_profile(user_id: str) -> dict[str, Any]:
     if not profile or not profile.get("phone"):
         raise HTTPException(403, "Avval ism va telefon raqamingizni kiriting")
     return profile
+
+
+async def bot_state_for(user_id: str) -> dict[str, Any]:
+    """Persistent onboarding state; in-memory values remain a deployment-safe fallback."""
+    try:
+        return await store.one("bot_states", {"telegram_id": f"eq.{user_id}", "select": "*"}) or {}
+    except HTTPException:
+        return {
+            "awaiting_name": str(user_id) in awaiting_name,
+            "pending_name": pending_names.get(str(user_id)),
+            "pending_challenge": pending_challenges.get(str(user_id)),
+        }
+
+
+async def save_bot_state(user_id: str, **values: Any) -> None:
+    key = str(user_id)
+    if "awaiting_name" in values:
+        awaiting_name.add(key) if values["awaiting_name"] else awaiting_name.discard(key)
+    if "pending_name" in values:
+        if values["pending_name"]:
+            pending_names[key] = str(values["pending_name"])
+        else:
+            pending_names.pop(key, None)
+    if "pending_challenge" in values:
+        if values["pending_challenge"]:
+            pending_challenges[key] = str(values["pending_challenge"])
+        else:
+            pending_challenges.pop(key, None)
+    try:
+        await store.call("POST", "bot_states", body={
+            "telegram_id": int(user_id), **values, "updated_at": iso(),
+        }, prefer="resolution=merge-duplicates,return=minimal")
+    except HTTPException:
+        log.warning("Persistent bot state unavailable; using process memory for %s", user_id)
 
 
 @app.get("/")
@@ -470,11 +588,6 @@ async def session(body: SessionRequest) -> dict[str, Any]:
             if not body.launch_ticket:
                 raise
             telegram_user = user_from_launch_ticket(body.launch_ticket)
-        else:
-            # initData is the stronger proof; discard the fallback ticket so it
-            # cannot be exchanged a second time.
-            if body.launch_ticket:
-                launch_tickets.pop(body.launch_ticket, None)
     elif body.launch_ticket:
         telegram_user = user_from_launch_ticket(body.launch_ticket)
     else:
@@ -578,16 +691,41 @@ async def my_games(user: dict[str, str] = Depends(current_user)) -> dict[str, An
         "GET", "games",
         params={
             "or": f"(white_id.eq.{uid},black_id.eq.{uid})",
-            "order": "updated_at.desc", "limit": "20", "select": "*"
+            "order": "updated_at.desc", "limit": "20",
+            "select": "id,code,mode,variant,white_id,white_name,black_id,black_name,ai_level,fen,status,result_reason,turn,time_control,increment,white_ms,black_ms,last_move_at,version,rating_applied,created_at,updated_at,ply_count,casual,correspondence,series_id,series_best_of,series_game_no,series_score,tournament_id",
         },
     )
     settled = [await settle_timeout(row) for row in rows]
-    return {"profile": profile, "games": [public_game(row, uid) for row in settled]}
+    rivals: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in settled:
+        if row.get("mode") != "friend" or not row.get("black_id"):
+            continue
+        opponent_id = str(row["black_id"] if str(row.get("white_id")) == uid else row.get("white_id") or "")
+        if not opponent_id or opponent_id in seen:
+            continue
+        seen.add(opponent_id)
+        rivals.append({
+            "id": opponent_id,
+            "name": str(row.get("black_name") if str(row.get("white_id")) == uid else row.get("white_name") or "Raqib"),
+            "last_game_id": str(row["id"]),
+        })
+        if len(rivals) == 6:
+            break
+    return {"profile": profile, "games": [public_game(row, uid) for row in settled], "rivals": rivals}
 
 
 @app.post("/api/games")
 async def create_game(body: GameCreateRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
     profile = await require_profile(user["id"])
+    invited_profile = None
+    if body.opponent_id and body.mode == "friend":
+        if body.opponent_id == user["id"]:
+            raise HTTPException(422, "O'zingizni challenge qila olmaysiz")
+        invited_profile = await profile_for(body.opponent_id)
+        if not invited_profile:
+            raise HTTPException(404, "Tanlangan raqib topilmadi")
+    correspondence = body.time_control >= 86400
     payload = {
         "code": code(), "mode": body.mode, "white_id": user["id"], "white_name": profile["full_name"],
         "variant": body.variant,
@@ -596,6 +734,10 @@ async def create_game(body: GameCreateRequest, user: dict[str, str] = Depends(cu
         "ai_level": body.ai_level if body.mode == "ai" else None,
         "status": "active" if body.mode == "ai" else "waiting",
         "time_control": body.time_control, "increment": body.increment,
+        "casual": body.casual or correspondence, "correspondence": correspondence,
+        "invited_id": str(body.opponent_id) if invited_profile else None,
+        "series_id": str(uuid4()), "series_best_of": body.series_best_of,
+        "series_game_no": 1, "series_score": {}, "ply_count": 0,
         "white_ms": body.time_control * 1000, "black_ms": body.time_control * 1000,
         "last_move_at": iso() if body.mode == "ai" else None,
     }
@@ -604,6 +746,11 @@ async def create_game(body: GameCreateRequest, user: dict[str, str] = Depends(cu
     # Send invitations through the bot first. The bot can onboard a new player
     # and issue a personalised launch ticket before opening the Mini App.
     share_url = f"https://t.me/{BOT_USERNAME}?start=join_{game['code']}" if BOT_USERNAME else f"{APP_URL}/?startapp=join_{game['code']}"
+    if invited_profile:
+        asyncio.create_task(notify_player(
+            game, str(body.opponent_id),
+            f"⚔️ {profile['full_name']} sizni {body.series_best_of} o'yinlik seriyaga chorladi.",
+        ))
     return {"game": public_game(game, user["id"]), "share_url": share_url}
 
 
@@ -616,6 +763,8 @@ async def claim_challenge(challenge_code: str, user_id: str, full_name: str) -> 
         raise HTTPException(404, "Challenge topilmadi")
     if game["white_id"] == user_id or game.get("black_id") == user_id:
         return game
+    if game.get("invited_id") and str(game["invited_id"]) != str(user_id):
+        raise HTTPException(403, "Bu shaxsiy challenge boshqa o'yinchi uchun")
     if game.get("black_id"):
         raise HTTPException(409, "Bu challenge allaqachon qabul qilingan")
     if game.get("status") != "waiting":
@@ -623,7 +772,7 @@ async def claim_challenge(challenge_code: str, user_id: str, full_name: str) -> 
     rows = await store.call(
         "PATCH", "games",
         params={"id": f"eq.{game['id']}", "black_id": "is.null", "status": "eq.waiting"},
-        body={"black_id": user_id, "black_name": full_name, "status": "active", "last_move_at": iso(), "updated_at": iso(), "version": game["version"] + 1},
+        body={"black_id": user_id, "black_name": full_name, "invited_id": None, "status": "active", "last_move_at": iso(), "updated_at": iso(), "version": game["version"] + 1},
     )
     if not rows:
         raise HTTPException(409, "Challenge'ni boshqa o'yinchi qabul qildi")
@@ -671,6 +820,10 @@ async def rematch(game_id: UUID, user: dict[str, str] = Depends(current_user)) -
     game_for_player(old, user["id"])
     if old["status"] in ("waiting", "active"):
         raise HTTPException(409, "Avval joriy o'yinni yakunlang")
+    existing = await store.one("games", {"rematch_of": f"eq.{game_id}", "select": "*"})
+    if existing:
+        game_for_player(existing, user["id"])
+        return {"game": public_game(existing, user["id"]), "already_created": True}
     if old["mode"] == "ai":
         profile = await require_profile(user["id"])
         white_id, white_name = user["id"], profile["full_name"]
@@ -680,14 +833,31 @@ async def rematch(game_id: UUID, user: dict[str, str] = Depends(current_user)) -
         black_id, black_name = old.get("white_id"), old.get("white_name")
     if not white_id or not black_id:
         raise HTTPException(409, "Raqib hali mavjud emas")
+    best_of = int(old.get("series_best_of") or 3)
+    old_score = dict(old.get("series_score") or {})
+    target = best_of // 2 + 1
+    series_finished = any(int(value or 0) >= target for value in old_score.values())
     payload = {
         "code": code(), "mode": old["mode"], "variant": old.get("variant", "standard"),
         "white_id": white_id, "white_name": white_name, "black_id": black_id, "black_name": black_name,
         "ai_level": old.get("ai_level"), "status": "active", "time_control": old["time_control"],
-        "increment": old["increment"], "white_ms": old["time_control"] * 1000,
+        "increment": old["increment"], "casual": old.get("casual", False),
+        "correspondence": old.get("correspondence", False),
+        "series_id": str(uuid4()) if series_finished else old.get("series_id") or str(uuid4()),
+        "series_best_of": best_of, "series_game_no": 1 if series_finished else int(old.get("series_game_no") or 1) + 1,
+        "series_score": {} if series_finished else old_score, "ply_count": 0, "rematch_of": str(game_id),
+        "white_ms": old["time_control"] * 1000,
         "black_ms": old["time_control"] * 1000, "last_move_at": iso(),
     }
-    rows = await store.call("POST", "games", body=payload)
+    try:
+        rows = await store.call("POST", "games", body=payload)
+    except HTTPException:
+        existing = await store.one("games", {"rematch_of": f"eq.{game_id}", "select": "*"})
+        if not existing:
+            raise
+        rows = [existing]
+    opponent_id = black_id if str(white_id) == str(user["id"]) else white_id
+    asyncio.create_task(notify_player(rows[0], str(opponent_id), "↻ Revansh tayyor. Navbatdagi jang boshlandi!"))
     return {"game": public_game(rows[0], user["id"])}
 
 
@@ -719,9 +889,25 @@ async def game_websocket(websocket: WebSocket, game_id: UUID) -> None:
     await game_sockets.connect(room_id, websocket, user_id)
     await websocket.send_json({"game": public_game(game, user_id) if user_id else spectator_game(game)})
     await game_sockets.broadcast_presence(room_id)
+    last_reaction = 0.0
     try:
         while True:
-            await websocket.receive_text()
+            message = await websocket.receive_text()
+            if message != "ping":
+                try:
+                    event = json.loads(message)
+                    emoji = str(event.get("reaction") or "")
+                except (json.JSONDecodeError, AttributeError):
+                    emoji = ""
+                stamp = now().timestamp()
+                if emoji in ALLOWED_REACTIONS and stamp - last_reaction >= 1.2:
+                    last_reaction = stamp
+                    if user_id is None:
+                        reaction_name, reaction_color = "Tomoshabin", "spectator"
+                    else:
+                        reaction_color = game_for_player(game, user_id)
+                        reaction_name = game.get("white_name") if reaction_color == "white" else game.get("black_name")
+                    await game_sockets.broadcast_event(room_id, {"reaction": {"emoji": emoji, "name": reaction_name or "O'yinchi", "color": reaction_color}})
     except WebSocketDisconnect:
         game_sockets.disconnect(room_id, websocket)
         await game_sockets.broadcast_presence(room_id)
@@ -746,6 +932,15 @@ def board_from_history(game: dict[str, Any]) -> chess.Board:
         log.error("Corrupt move history in game %s", game.get("id"))
         raise HTTPException(409, "O'yin tarixi buzilgan") from exc
     return board
+
+
+def series_result_payload(game: dict[str, Any], status: str) -> dict[str, int]:
+    """Return an updated immutable series score for a newly finished game."""
+    score = dict(game.get("series_score") or {})
+    winner_id = game.get("white_id") if status == "white_won" else game.get("black_id") if status == "black_won" else None
+    if winner_id:
+        score[str(winner_id)] = int(score.get(str(winner_id), 0)) + 1
+    return score
 
 
 async def apply_rating(game: dict[str, Any]) -> None:
@@ -788,16 +983,24 @@ async def settle_timeout(game: dict[str, Any]) -> dict[str, Any]:
     if int(game[remaining_key]) - elapsed_ms(game) > 0:
         return game
     winner = "black" if timed_out == "white" else "white"
-    board = board_from_history(game)
+    try:
+        board = chess.Board(game.get("fen") or chess.STARTING_FEN)
+    except ValueError:
+        board = board_from_history(game)
     winner_color = chess.WHITE if winner == "white" else chess.BLACK
     if board.has_insufficient_material(winner_color):
         status, reason = "draw", "timeout_insufficient_material"
     else:
         status, reason = f"{winner}_won", "timeout"
+    finish_payload: dict[str, Any] = {
+        "status": status, "result_reason": reason, "updated_at": iso(), "version": game["version"] + 1,
+    }
+    if status in ("white_won", "black_won"):
+        finish_payload["series_score"] = series_result_payload(game, status)
     rows = await store.call(
         "PATCH", "games",
         params={"id": f"eq.{game['id']}", "version": f"eq.{game['version']}", "status": "eq.active"},
-        body={"status": status, "result_reason": reason, "updated_at": iso(), "version": game["version"] + 1},
+        body=finish_payload,
     )
     if not rows:
         return await store.one("games", {"id": f"eq.{game['id']}", "select": "*"}) or game
@@ -821,6 +1024,17 @@ async def active_game_clock_worker() -> None:
                 log.exception("Clock worker failed for game %s", game_id)
 
 
+async def record_move_audit(game_id: str, ply: int, actor_id: str, uci: str, san: str, fen: str) -> None:
+    """Durable audit trail runs after the authoritative game row is committed."""
+    try:
+        await store.call("POST", "game_moves", body={
+            "game_id": game_id, "ply": ply, "player_id": actor_id,
+            "uci": uci, "san": san, "fen_after": fen,
+        }, prefer="resolution=ignore-duplicates,return=minimal")
+    except HTTPException:
+        log.exception("Move audit insert failed for %s", game_id)
+
+
 @app.on_event("startup")
 async def start_game_clock_worker() -> None:
     app.state.game_clock_task = asyncio.create_task(active_game_clock_worker())
@@ -828,9 +1042,13 @@ async def start_game_clock_worker() -> None:
 
 @app.on_event("shutdown")
 async def stop_game_clock_worker() -> None:
+    global _outbound_client
     task = getattr(app.state, "game_clock_task", None)
     if task:
         task.cancel()
+    if _outbound_client is not None and not _outbound_client.is_closed:
+        await _outbound_client.aclose()
+        _outbound_client = None
 
 
 @app.post("/api/games/{game_id}/move")
@@ -858,7 +1076,10 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
             status, result_reason = "draw", "timeout_insufficient_material"
         else:
             result_reason = "timeout"
-        rows = await store.call("PATCH", "games", params={"id": f"eq.{game_id}", "version": f"eq.{game['version']}"}, body={"status": status, "result_reason": result_reason, "updated_at": iso(), "version": game["version"] + 1})
+        timeout_payload: dict[str, Any] = {"status": status, "result_reason": result_reason, "updated_at": iso(), "version": game["version"] + 1}
+        if status in ("white_won", "black_won"):
+            timeout_payload["series_score"] = series_result_payload(game, status)
+        rows = await store.call("PATCH", "games", params={"id": f"eq.{game_id}", "version": f"eq.{game['version']}"}, body=timeout_payload)
         if rows:
             await apply_rating(rows[0])
             await game_sockets.broadcast(rows[0])
@@ -905,11 +1126,14 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
         status, reason = "draw", "threefold_repetition"
     payload = {
         "fen": board.fen(), "move_history": history, "status": status, "result_reason": reason,
-        "turn": "black" if color == "white" else "white", "draw_offer_by": None,
+        "turn": "black" if color == "white" else "white", "draw_offer_by": None, "takeback_by": None,
+        "ply_count": len(history),
         remaining_key: remaining + int(game["increment"]) * 1000,
         "white_checks": white_checks, "black_checks": black_checks,
         "last_move_at": iso(), "updated_at": iso(), "version": game["version"] + 1,
     }
+    if status in ("white_won", "black_won"):
+        payload["series_score"] = series_result_payload(game, status)
     rows = await store.call(
         "PATCH", "games",
         params={"id": f"eq.{game_id}", "version": f"eq.{game['version']}", "status": "eq.active"},
@@ -918,10 +1142,7 @@ async def make_move(game_id: UUID, body: MoveRequest, user: dict[str, str] = Dep
     if not rows:
         raise HTTPException(409, "Raqib yurib bo'ldi; holat yangilandi")
     updated = rows[0]
-    try:
-        await store.call("POST", "game_moves", body={"game_id": str(game_id), "ply": len(history), "player_id": actor_id, "uci": body.uci, "san": san, "fen_after": board.fen()}, prefer="resolution=ignore-duplicates,return=minimal")
-    except HTTPException:
-        log.exception("Move audit insert failed for %s", game_id)
+    asyncio.create_task(record_move_audit(str(game_id), len(history), str(actor_id), body.uci, san, board.fen()))
     if status != "active":
         await apply_rating(updated)
     await game_sockets.broadcast(updated)
@@ -958,6 +1179,36 @@ async def game_action(game_id: UUID, body: ActionRequest, user: dict[str, str] =
         if not game.get("draw_offer_by") or game["draw_offer_by"] == user["id"]:
             raise HTTPException(409, "Raqibdan durang taklifi yo'q")
         payload.update(status="draw", result_reason="agreement", draw_offer_by=None)
+    elif body.action == "request_takeback":
+        if not game.get("casual") or game.get("mode") != "friend":
+            raise HTTPException(409, "Yurishni qaytarish faqat casual do'stlik jangida mavjud")
+        if not game.get("move_history"):
+            raise HTTPException(409, "Qaytariladigan yurish yo'q")
+        if str(game["move_history"][-1].get("by") or "") != str(user["id"]):
+            raise HTTPException(409, "Faqat o'zingizning oxirgi yurishingizni qaytara olasiz")
+        payload["takeback_by"] = user["id"]
+    elif body.action == "decline_takeback":
+        if not game.get("takeback_by") or str(game["takeback_by"]) == str(user["id"]):
+            raise HTTPException(409, "Raqibdan qaytarish so'rovi yo'q")
+        payload["takeback_by"] = None
+    elif body.action == "accept_takeback":
+        if not game.get("casual") or not game.get("takeback_by") or str(game["takeback_by"]) == str(user["id"]):
+            raise HTTPException(409, "Raqibdan qaytarish so'rovi yo'q")
+        history = list(game.get("move_history") or [])
+        removed = history.pop()
+        board = board_from_history({"move_history": history, "id": game.get("id")})
+        white_checks, black_checks = int(game.get("white_checks") or 0), int(game.get("black_checks") or 0)
+        if "+" in str(removed.get("san") or "") or "#" in str(removed.get("san") or ""):
+            if board.turn == chess.WHITE:
+                white_checks = max(0, white_checks - 1)
+            else:
+                black_checks = max(0, black_checks - 1)
+        payload.update(
+            fen=board.fen(), move_history=history, ply_count=len(history),
+            turn="white" if board.turn == chess.WHITE else "black", takeback_by=None,
+            draw_offer_by=None, white_checks=white_checks, black_checks=black_checks,
+            last_move_at=iso(),
+        )
     elif body.action == "claim_timeout":
         if game["status"] != "active" or not game.get("last_move_at"):
             raise HTTPException(409, "Vaqt hisoblanmayapti")
@@ -974,15 +1225,46 @@ async def game_action(game_id: UUID, body: ActionRequest, user: dict[str, str] =
             payload.update(status=f"{winner}_won", result_reason="timeout")
     else:
         raise HTTPException(409, "Bu amal hozir mumkin emas")
+    resulting_status = str(payload.get("status") or game.get("status"))
+    if resulting_status in ("white_won", "black_won"):
+        payload["series_score"] = series_result_payload(game, resulting_status)
     rows = await store.call("PATCH", "games", params={"id": f"eq.{game_id}", "version": f"eq.{game['version']}"}, body=payload)
     if not rows:
         raise HTTPException(409, "O'yin holati o'zgardi")
+    if body.action == "accept_takeback":
+        try:
+            await store.call("DELETE", "game_moves", params={"game_id": f"eq.{game_id}", "ply": f"gt.{len(rows[0].get('move_history') or [])}"}, prefer="return=minimal")
+        except HTTPException:
+            log.exception("Takeback move audit cleanup failed for %s", game_id)
     if rows[0]["status"] not in ("waiting", "active"):
         await apply_rating(rows[0])
     await game_sockets.broadcast(rows[0])
-    if body.action == "offer_draw" or rows[0]["status"] not in ("waiting", "active"):
+    if body.action in ("offer_draw", "request_takeback") or rows[0]["status"] not in ("waiting", "active"):
         asyncio.create_task(notify_game_event(rows[0], actor_id=str(user["id"]), action=body.action))
     return {"game": public_game(rows[0], user["id"])}
+
+
+@app.post("/api/games/{game_id}/reaction")
+async def send_reaction(game_id: UUID, body: ReactionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, bool]:
+    game = await store.one("games", {"id": f"eq.{game_id}", "select": "id,white_id,black_id,white_name,black_name"})
+    if not game:
+        raise HTTPException(404, "O'yin topilmadi")
+    color = game_for_player(game, user["id"])
+    key = (str(game_id), str(user["id"]))
+    stamp = now().timestamp()
+    if stamp - reaction_limits.get(key, 0) < 1.2:
+        raise HTTPException(429, "Reaksiyalar orasida biroz kuting")
+    reaction_limits[key] = stamp
+    if len(reaction_limits) > 5000:
+        cutoff = stamp - 60
+        for old_key, value in list(reaction_limits.items()):
+            if value < cutoff:
+                reaction_limits.pop(old_key, None)
+    name = game.get("white_name") if color == "white" else game.get("black_name")
+    await game_sockets.broadcast_event(str(game_id), {
+        "reaction": {"emoji": body.emoji, "name": name or "O'yinchi", "color": color}
+    })
+    return {"ok": True}
 
 
 async def clan_membership(user_id: str) -> dict[str, Any] | None:
@@ -1031,10 +1313,14 @@ async def settle_competition_progress(game: dict[str, Any], score_w: float) -> N
 async def social_hub(user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
     await require_profile(user["id"])
     clan = await clan_membership(user["id"])
+    clan_leaderboard = await store.call("GET", "clans", params={"select": "id,name,code,xp", "order": "xp.desc,created_at.asc", "limit": "10"})
     tournaments = await store.call("GET", "tournaments", params={
         "status": "in.(registration,active,finished)", "order": "created_at.desc", "limit": "20", "select": "*",
     })
-    entries = await store.call("GET", "tournament_players", params={"select": "tournament_id,user_id,display_name,score"})
+    tournament_ids = ",".join(str(item["id"]) for item in tournaments)
+    entries = await store.call("GET", "tournament_players", params={
+        "tournament_id": f"in.({tournament_ids})", "select": "tournament_id,user_id,display_name,score", "limit": "640",
+    }) if tournament_ids else []
     active_games = await store.call("GET", "games", params={
         "or": f"(white_id.eq.{user['id']},black_id.eq.{user['id']})",
         "tournament_id": "not.is.null", "status": "in.(waiting,active)", "select": "*",
@@ -1052,7 +1338,7 @@ async def social_hub(user: dict[str, str] = Depends(current_user)) -> dict[str, 
         )[:3]
         own_game = next((game for game in active_games if str(game.get("tournament_id")) == str(tournament["id"])), None)
         tournament["my_game"] = public_game(own_game, user["id"]) if own_game else None
-    return {"clan": clan, "tournaments": tournaments}
+    return {"clan": clan, "clan_leaderboard": clan_leaderboard, "tournaments": tournaments}
 
 
 @app.post("/api/clans")
@@ -1154,8 +1440,7 @@ async def telegram(method: str, payload: dict[str, Any]) -> dict[str, Any] | Non
     if not BOT_TOKEN:
         return None
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", json=payload)
+        response = await outbound_client().post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", json=payload)
         data = response.json()
         if response.status_code >= 400 or not data.get("ok"):
             log.error("Telegram %s failed: %s", method, response.text)
@@ -1216,6 +1501,8 @@ async def notify_game_event(
             text = f"🏁 {result} · {reason}.\nJang: {game['code']}"
         elif action == "offer_draw":
             text = f"½ {actor_name} durang taklif qildi.\nJang: {game['code']}"
+        elif action == "request_takeback":
+            text = f"↶ {actor_name} oxirgi yurishni qaytarishni so'radi.\nJang: {game['code']}"
         elif san:
             marker = " — SHAX!" if "+" in san or "#" in san else ""
             text = f"♟ {actor_name} yurdi: {san}{marker}\nNavbat sizda · Jang: {game['code']}"
@@ -1285,8 +1572,8 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
             await telegram("sendMessage", {"chat_id": chat_id, "text": "Iltimos, aynan o'zingizning raqamingizni yuboring."})
             return JSONResponse({"ok": True})
         user_key = str(user["id"])
-        full_name = pending_names.pop(user_key, "") or " ".join(filter(None, [user.get("first_name"), user.get("last_name")])).strip() or "Chess player"
-        awaiting_name.discard(user_key)
+        saved_state = await bot_state_for(user_key)
+        full_name = str(saved_state.get("pending_name") or pending_names.get(user_key) or "").strip() or " ".join(filter(None, [user.get("first_name"), user.get("last_name")])).strip() or "Chess player"
         payload = {
             "telegram_id": user["id"], "username": user.get("username"), "full_name": full_name,
             "phone": normalize_phone(contact["phone_number"]), "updated_at": iso(),
@@ -1300,7 +1587,8 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
                 "text": f"Telefon qabul qilindi, ammo bazaga saqlashda xato bor. {exc.detail}",
             })
             return JSONResponse({"ok": True})
-        challenge_code = pending_challenges.pop(user_key, "")
+        challenge_code = str(saved_state.get("pending_challenge") or pending_challenges.get(user_key) or "")
+        await save_bot_state(user_key, awaiting_name=False, pending_name=None, pending_challenge=None)
         challenge_joined = False
         if challenge_code:
             try:
@@ -1323,7 +1611,7 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
     elif str(message.get("text", "")).startswith("/privacy"):
         await telegram("sendMessage", {"chat_id": chat_id, "text": f"Maxfiylik siyosati: {APP_URL}/privacy"})
     elif str(message.get("text", "")).startswith("/name"):
-        awaiting_name.add(str(user["id"]))
+        await save_bot_state(str(user["id"]), awaiting_name=True, pending_name=None)
         await telegram("sendMessage", {
             "chat_id": chat_id,
             "text": "Ism va familiyangizni yozing:",
@@ -1332,14 +1620,12 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
     elif str(message.get("text", "")).startswith(("/start", "/play")):
         user_key = str(user["id"])
         command_parts = str(message.get("text", "")).split(maxsplit=1)
+        challenge_code = ""
         if command_parts[0].startswith("/start") and len(command_parts) == 2:
             challenge_match = re.fullmatch(r"join_([A-Za-z1-9]{7})", command_parts[1].strip())
             if challenge_match:
-                pending_challenges[user_key] = challenge_match.group(1).upper()
-            else:
-                pending_challenges.pop(user_key, None)
-        elif command_parts[0].startswith("/start"):
-            pending_challenges.pop(user_key, None)
+                challenge_code = challenge_match.group(1).upper()
+        await save_bot_state(user_key, pending_challenge=challenge_code or None)
         try:
             existing = await profile_for(user_key)
         except HTTPException as exc:
@@ -1350,7 +1636,6 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
             })
             return JSONResponse({"ok": True})
         if existing:
-            challenge_code = pending_challenges.pop(user_key, "")
             challenge_joined = False
             if challenge_code:
                 try:
@@ -1358,6 +1643,7 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
                     challenge_joined = True
                 except HTTPException as exc:
                     await telegram("sendMessage", {"chat_id": chat_id, "text": f"Challenge'ga qo'shilmadi: {exc.detail}"})
+            await save_bot_state(user_key, pending_challenge=None, awaiting_name=False, pending_name=None)
             await telegram("sendMessage", {
                 "chat_id": chat_id,
                 "text": f"⚔️ {existing['full_name']}, challenge qabul qilindi — jang boshlandi!" if challenge_joined else f"Qaytganingizdan xursandmiz, {existing['full_name']}!",
@@ -1367,20 +1653,22 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
                 }]]},
             })
         else:
-            awaiting_name.add(user_key)
+            await save_bot_state(user_key, awaiting_name=True)
             await telegram("sendMessage", {
                 "chat_id": chat_id,
                 "text": "ZAMIN 3D CHESS'ga xush kelibsiz! Avval ism va familiyangizni yozing:",
                 "reply_markup": {"force_reply": True, "input_field_placeholder": "Masalan: Aziz Karimov"},
             })
-    elif str(user["id"]) in awaiting_name and message.get("text"):
+    elif message.get("text"):
+        user_key = str(user["id"])
+        saved_state = await bot_state_for(user_key)
+        if not (saved_state.get("awaiting_name") or user_key in awaiting_name):
+            return JSONResponse({"ok": True})
         full_name = " ".join(str(message["text"]).split())
         if len(full_name) < 2 or len(full_name) > 80:
             await telegram("sendMessage", {"chat_id": chat_id, "text": "Ism 2–80 ta belgidan iborat bo‘lishi kerak. Qayta yozing:"})
         else:
-            user_key = str(user["id"])
-            pending_names[user_key] = full_name
-            awaiting_name.discard(user_key)
+            await save_bot_state(user_key, pending_name=full_name, awaiting_name=False)
             await telegram("sendMessage", {
                 "chat_id": chat_id,
                 "text": f"Rahmat, {full_name}. Endi telefon raqamingizni tasdiqlang:",

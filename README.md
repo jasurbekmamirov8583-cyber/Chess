@@ -14,7 +14,7 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - Optimistic yurish: dona server javobini kutmasdan darhol siljiydi, server rad etsa ishonchli holat avtomatik tiklanadi.
 - Urib olishda qurol, sakrash va yiqilish animatsiyasi; yurish va urishda klassik yog‘och dona zarbasi uslubidagi Web Audio tovushlari.
 - O‘yin yakunida taxta yopilmaydi: 2D shoh egilish impulsi, 3D shoh yiqilishi, taxta ichidagi natija animatsiyasi hamda darhol replay/tahlil/revansh amallari ko‘rinadi.
-- 4 darajali brauzer AI. Hisob foydalanuvchi qurilmasida bajariladi, Render CPU’sini band qilmaydi.
+- 4 darajali brauzer AI. Hisob alohida Web Worker oqimida bajariladi: interfeys qotmaydi va Render CPU’si band bo‘lmaydi.
 - Telegram challenge linki va 7 belgili kod orqali multiplayer; do‘st botdagi `Start`ni bosishi bilan aynan o‘sha challenge serverda qabul qilinadi.
 - FastAPI WebSocket orqali yurishlarni jonli qabul qilish; uzilishda avtomatik HTTP fallback.
 - 3+0, 10+3 va 15+10 vaqt nazoratlari, server nazoratidagi timeout, ko‘rinadigan durang/taslim bo‘lish amallari.
@@ -23,13 +23,18 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - Mobil Telegram oynasi va desktop uchun alohida responsive ko‘rinish.
 - Premove, avtomatik qayta ulanish, saqlangan xavfsiz sessiya va faol jangni tiklash: ulashish oynasi Telegram Mini App’ni minimallashtirsa ham qaytilganda aynan o‘sha taxta ochiladi, jang va soatlar davom etadi.
 - Jonli tomoshabin rejimi, online ishtirokchilar soni va Telegram’da yuboriladigan xavfsiz `?watch=` havolasi.
-- Kinematik replay, revansh va brauzerda ishlaydigan ZAMIN Coach: aniqlik foizi, burilish nuqtalari va yurish tasnifi.
+- Kinematik replay, revansh va brauzerda ishlaydigan tezkor pozitsion tahlil: taxminiy aniqlik, burilish nuqtalari va yurish tasnifi.
 - Har kuni almashadigan taktik ekspeditsiya, vaqt, puzzle reytingi, kunlik seriya va Army XP.
 - Professional yashil-krem, yong‘oq, slate va yuqori kontrast taxta palitralari; Staunton, Modern va Royal dona proporsiyalari; turnir, yumshoq va ko‘tarilgan ramka shakllari. Bular arena mavzusidan mustaqil tanlanadi va Supabase’da saqlanadi.
 - Registan, Cyber, Muzlik va Vulqon arenalari; avtomatik, yuqori sifat va batareyani tejash grafik rejimlari.
 - Foydalanuvchi ayni o‘yinda online bo‘lmasa, raqib yurishi, shax, durang taklifi, challenge qabul qilinishi va o‘yin natijasi Telegram bot orqali keladi; xabardagi tugma aynan o‘sha jangni ochadi.
 - XP bilan rivojlanadigan dona aura/zirhlari, clan yaratish yoki kod bilan kirish, clan XP va arena turnirlari.
 - Klassik FIDE rejimidan tashqari `Taxt uchun jang` (shoh markazga yetadi) va `Uch karra shax` variantlari.
+- Best-of-1/3/5 seriyalar, seriya hisobi va ranglar almashadigan tezkor revansh.
+- Casual janglarda ikki tomon tasdig‘i bilan oxirgi yurishni qaytarish.
+- Har yurishga 24 soat beriladigan correspondence rejimi va offline Telegram ogohlantirishlari.
+- O‘yinchi hamda tomoshabinlar uchun real-time emoji/GG reaksiyalari, oxirgi raqibni bir tegishda qayta challenge qilish va natijani jonli taxta havolasi bilan ulashish.
+- Lobby tarixida og‘ir yurish JSON’i yuklanmaydi; tashqi HTTPS ulanishlar keep-alive pool’dan foydalanadi, statik fayllar GZip va uzoq cache bilan uzatiladi.
 
 ## Tuzilma
 
@@ -113,12 +118,12 @@ Telegram Web App menu button configured
 
 So‘ng botga `/start` yuboring. Bot avval ism-familiyani so‘raydi, keyin telefonni Telegram’ning rasmiy `request_contact` tugmasi bilan oladi. Avval ro‘yxatdan o‘tgan foydalanuvchi ismini `/name` buyrug‘i bilan yangilashi mumkin. Foydalanuvchi Web App’ni to‘g‘ridan-to‘g‘ri ochsa ham, ism va xalqaro formatdagi telefon kiritilmaguncha o‘yin yaratish/yopiq challenge’ga qo‘shilish bloklanadi.
 
-Web App’ni botning yangi xabaridagi `ARENANI OCHISH` tugmasidan oching. Ayrim Telegram mijozlari chatning doimiy menyu tugmasidan ochilganda `initData` yubormasligi mumkin. Shu holat uchun bot inline tugmaga 10 daqiqalik shaxsiy, bir martalik kirish chiptasini qo‘shadi. Eski xabarlardagi tugmalar qayta yozilmaydi; har bir deploydan keyin sinov uchun botga yangidan `/start` yuboring.
+Web App’ni botning yangi xabaridagi `ARENANI OCHISH` tugmasidan oching. Ayrim Telegram mijozlari chatning doimiy menyu tugmasidan ochilganda `initData` yubormasligi mumkin. Shu holat uchun bot inline tugmaga foydalanuvchiga bog‘langan 10 daqiqalik imzolangan kirish chiptasini qo‘shadi. Chipta Render qayta ishga tushsa ham tekshiriladi. Eski xabarlardagi tugmalar qayta yozilmaydi; deploydan keyin sinov uchun botga yangidan `/start` yuboring.
 
 ## Xavfsizlik modeli
 
 - Telegram `initData` HMAC-SHA256 bilan backend’da tekshiriladi va 24 soatdan eski sessiya qabul qilinmaydi.
-- Telegram `initData` kelmagan mijozlar uchun bot yuborgan inline tugmada foydalanuvchiga bog‘langan, 10 daqiqalik bir martalik launch ticket ishlatiladi. U sessiyaga almashtirilishi bilan darhol yaroqsiz qilinadi va frontend manzil satridan olib tashlaydi.
+- Telegram `initData` kelmagan mijozlar uchun bot yuborgan inline tugmada foydalanuvchiga bog‘langan, 10 daqiqalik HMAC/JWT launch ticket ishlatiladi. Frontend uni sessiyaga almashtirgach manzil satridan olib tashlaydi.
 - Browser uchun Telegram imzosidan keyin alohida 12 soatlik API token beriladi; `APP_SECRET` tashqariga chiqmaydi.
 - Telefon `games` jadvaliga yozilmaydi va raqibga yuborilmaydi.
 - Browser Supabase’ga to‘g‘ridan-to‘g‘ri ulanmaydi; barcha o‘qish va yozishlar ruxsat tekshiradigan Python API orqali o‘tadi.

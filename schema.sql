@@ -31,7 +31,7 @@ create table if not exists public.games (
   status text not null default 'waiting' check (status in ('waiting','active','white_won','black_won','draw','aborted')),
   result_reason text,
   turn text not null default 'white' check (turn in ('white','black')),
-  time_control integer not null default 600 check (time_control between 60 and 3600),
+  time_control integer not null default 600 check (time_control between 60 and 604800),
   increment integer not null default 3 check (increment between 0 and 30),
   white_ms integer not null default 600000,
   black_ms integer not null default 600000,
@@ -39,6 +39,16 @@ create table if not exists public.games (
   draw_offer_by text,
   version integer not null default 0,
   rating_applied boolean not null default false,
+  ply_count integer not null default 0,
+  casual boolean not null default false,
+  correspondence boolean not null default false,
+  invited_id text,
+  takeback_by text,
+  series_id uuid not null default gen_random_uuid(),
+  series_best_of integer not null default 3 check (series_best_of in (1, 3, 5)),
+  series_game_no integer not null default 1,
+  series_score jsonb not null default '{}'::jsonb,
+  rematch_of uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -71,6 +81,32 @@ alter table public.games add column if not exists white_checks integer not null 
 alter table public.games add column if not exists black_checks integer not null default 0;
 alter table public.games add column if not exists spectators_allowed boolean not null default true;
 alter table public.games add column if not exists tournament_id uuid;
+alter table public.games add column if not exists ply_count integer not null default 0;
+alter table public.games add column if not exists casual boolean not null default false;
+alter table public.games add column if not exists correspondence boolean not null default false;
+alter table public.games add column if not exists invited_id text;
+alter table public.games add column if not exists takeback_by text;
+alter table public.games add column if not exists series_id uuid not null default gen_random_uuid();
+alter table public.games add column if not exists series_best_of integer not null default 3;
+alter table public.games add column if not exists series_game_no integer not null default 1;
+alter table public.games add column if not exists series_score jsonb not null default '{}'::jsonb;
+alter table public.games add column if not exists rematch_of uuid;
+
+update public.games set ply_count = jsonb_array_length(move_history)
+where ply_count = 0 and jsonb_array_length(move_history) > 0;
+
+alter table public.games drop constraint if exists games_time_control_check;
+alter table public.games add constraint games_time_control_check check (time_control between 60 and 604800);
+alter table public.games drop constraint if exists games_series_best_of_check;
+alter table public.games add constraint games_series_best_of_check check (series_best_of in (1, 3, 5));
+
+create table if not exists public.bot_states (
+  telegram_id bigint primary key,
+  awaiting_name boolean not null default false,
+  pending_name text,
+  pending_challenge text,
+  updated_at timestamptz not null default now()
+);
 
 create table if not exists public.clans (
   id uuid primary key default gen_random_uuid(),
@@ -132,8 +168,12 @@ end $$;
 
 create index if not exists games_code_idx on public.games(code);
 create index if not exists games_players_idx on public.games(white_id, black_id, updated_at desc);
+create index if not exists games_series_idx on public.games(series_id, series_game_no);
+create index if not exists games_invited_idx on public.games(invited_id, status, created_at desc);
+create unique index if not exists games_rematch_of_idx on public.games(rematch_of) where rematch_of is not null;
 create index if not exists game_moves_game_idx on public.game_moves(game_id, ply);
 create index if not exists clans_code_idx on public.clans(code);
+create index if not exists clans_xp_idx on public.clans(xp desc);
 create index if not exists tournament_status_idx on public.tournaments(status, created_at desc);
 create index if not exists tournament_players_user_idx on public.tournament_players(user_id);
 create index if not exists puzzle_user_date_idx on public.puzzle_completions(user_id, puzzle_date desc);
@@ -146,6 +186,7 @@ alter table public.clan_members enable row level security;
 alter table public.tournaments enable row level security;
 alter table public.tournament_players enable row level security;
 alter table public.puzzle_completions enable row level security;
+alter table public.bot_states enable row level security;
 
 drop policy if exists "players can read their games" on public.games;
 create policy "players can read their games" on public.games for select to authenticated
@@ -174,12 +215,18 @@ revoke insert, update, delete on public.games from anon, authenticated;
 revoke insert, update, delete on public.game_moves from anon, authenticated;
 revoke all on public.profiles from anon, authenticated;
 revoke all on public.clans, public.clan_members, public.tournaments, public.tournament_players, public.puzzle_completions from anon, authenticated;
+revoke all on public.bot_states from anon, authenticated;
 grant select on public.profiles, public.games, public.game_moves to authenticated;
 
--- Realtime publication (safe to re-run).
+-- The app uses its own authenticated FastAPI WebSocket rooms. Avoid duplicate
+-- WAL/realtime work when this table was added by an older schema version.
 do $$ begin
-  alter publication supabase_realtime add table public.games;
-exception when duplicate_object then null;
+  if exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'games'
+  ) then
+    alter publication supabase_realtime drop table public.games;
+  end if;
 end $$;
 
 -- Make newly added columns visible to the REST API immediately.
