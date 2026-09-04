@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=5" />
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/static/style.css?v=7" />
+  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script type="importmap">
     {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"}}
   </script>
@@ -98,6 +98,11 @@
             <div id="turn-banner" class="turn-banner">SIZNING YURISHINGIZ</div>
             <div id="premove-banner" class="premove-banner hidden">OLDINDAN YURISH BELGILANDI</div>
             <div id="spectator-banner" class="spectator-banner hidden">◉ TOMOSHABIN REJIMI</div>
+            <div id="history-nav" class="history-nav" aria-label="Yurishlar tarixini ko‘rish">
+              <button id="history-back" type="button" title="Oldingi yurish">‹</button>
+              <button id="history-live" type="button" class="live" title="Jonli holatga qaytish"><i></i><span>LIVE</span></button>
+              <button id="history-forward" type="button" title="Keyingi yurish">›</button>
+            </div>
             <div class="arena-vignette" aria-hidden="true"></div>
           </div>
           <div class="player-strip self">
@@ -179,6 +184,6 @@
   <div id="reconnect-banner" class="reconnect-banner hidden"><i></i><span>ALOQA QAYTA TIKLANMOQDA...</span></div>
 
   <div id="toast-stack" class="toast-stack"></div>
-  <script type="module" src="/static/app.js?v=5"></script>
+  <script type="module" src="/static/app.js?v=7"></script>
 </body>
 </html>

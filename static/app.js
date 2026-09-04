@@ -12,7 +12,7 @@ const state = {
   socket: null, socketPing: null, board: null, board3d: null, board2d: null, heroArena: null, boardMode: savedBoardMode==='2d'?'2d':'3d', chess: new Chess(),
   selected: null, legal: [], sound: true, mode: 'friend', aiLevel: 2,
   time: 600, increment: 3, variant: 'standard', shareUrl: '', moving: false, aiThinking: false, timeoutClaimed: false, pendingChallenge: '', realtimeLive: false,
-  premove: null, selectionMode: 'move', spectator: false, replaying: false, resultSynced: false, theme: 'registan', performanceMode: 'auto', presence: {players:0,spectators:0}, puzzle: null, puzzleStartedAt: 0,
+  premove: null, selectionMode: 'move', spectator: false, replaying: false, historyPly: null, resultSynced: false, theme: 'registan', performanceMode: 'auto', presence: {players:0,spectators:0}, puzzle: null, puzzleStartedAt: 0,
 };
 
 const PUZZLES=[
@@ -111,7 +111,7 @@ class ChessArena3D {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.12;
     container.append(this.renderer.domElement);
     this.root = new THREE.Group(); this.scene.add(this.root);
-    this.pieces = new Map(); this.squares = []; this.markers = [];
+    this.pieces = new Map(); this.squares = []; this.markers = [];this.positionMarkers=[];
     this.raycaster = new THREE.Raycaster(); this.pointer = new THREE.Vector2();
     this.buildLights(); this.buildBoard();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -225,6 +225,12 @@ class ChessArena3D {
     destinations.forEach(sq=>add(sq,this.pieces.has(sq) ? 0xd6534e : 0x86bd8d,this.pieces.has(sq) ? .26 : .14));
   }
   clearMarkers(){this.markers.forEach(marker=>{this.root.remove(marker);this.release(marker)});this.markers=[]}
+  showPositionHighlights(lastMove='',checkSquare=''){
+    this.positionMarkers.forEach(marker=>{this.root.remove(marker);this.release(marker)});this.positionMarkers=[];
+    const add=(square,color,opacity)=>{if(!square)return;const marker=new THREE.Mesh(new THREE.PlaneGeometry(.97,.97),new THREE.MeshBasicMaterial({color,transparent:true,opacity,depthWrite:false,side:THREE.DoubleSide}));marker.rotation.x=-Math.PI/2;marker.position.copy(this.squarePosition(square));marker.position.y=.143;marker.userData.square=square;this.root.add(marker);this.positionMarkers.push(marker)};
+    if(lastMove){add(lastMove.slice(0,2),0xf2b94b,.24);add(lastMove.slice(2,4),0x69d6db,.34)}
+    if(checkSquare){add(checkSquare,0xff2638,.68);const ring=new THREE.Mesh(new THREE.RingGeometry(.28,.43,32),new THREE.MeshBasicMaterial({color:0xff6974,transparent:true,opacity:.95,side:THREE.DoubleSide,depthWrite:false}));ring.rotation.x=-Math.PI/2;ring.position.copy(this.squarePosition(checkSquare));ring.position.y=.19;ring.userData.square=checkSquare;this.root.add(ring);this.positionMarkers.push(ring)}
+  }
   pick(event) {
     if(state.moving) return;
     const rect=this.renderer.domElement.getBoundingClientRect();this.pointer.x=((event.clientX-rect.left)/rect.width)*2-1;this.pointer.y=-((event.clientY-rect.top)/rect.height)*2+1;
@@ -254,16 +260,17 @@ class ChessArena3D {
 
 class ChessBoard2D {
   constructor(container){
-    this.container=container;this.element=$('#board-2d',container);this.fen=new Chess().fen();this.viewColor='white';this.selected=null;this.destinations=[];
+    this.container=container;this.element=$('#board-2d',container);this.fen=new Chess().fen();this.viewColor='white';this.selected=null;this.destinations=[];this.lastMove='';this.checkSquare='';
     this.element.addEventListener('click',event=>{const square=event.target.closest('.square-2d');if(square)onSquare(square.dataset.square)});
   }
   orient(color='white'){this.viewColor=color;this.render()}
   load(fen){this.fen=fen;this.render()}
   commitMove(uci,fen){this.load(fen)}
+  showPositionHighlights(lastMove='',checkSquare=''){this.lastMove=lastMove;this.checkSquare=checkSquare;this.render()}
   render(){
     const chess=new Chess(this.fen),files=this.viewColor==='black'?[...'hgfedcba']:[...'abcdefgh'],ranks=this.viewColor==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
-    const glyph={wp:'♙',wn:'♘',wb:'♗',wr:'♖',wq:'♕',wk:'♔',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};let html='';
-    for(const rank of ranks)for(const file of files){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1,isEdgeFile=file===files[0],isEdgeRank=rank===ranks.at(-1),classes=['square-2d',dark?'dark':'light'];if(square===this.selected)classes.push('selected');if(this.destinations.includes(square))classes.push(piece?'capture':'legal');html+=`<button type="button" class="${classes.join(' ')}" data-square="${square}" aria-label="${square}">${piece?`<span class="piece-2d ${piece.color==='w'?'white':'black'}">${glyph[piece.color+piece.type]}</span>`:''}${isEdgeFile?`<small class="coord-2d coord-rank">${rank}</small>`:''}${isEdgeRank?`<small class="coord-2d coord-file">${file}</small>`:''}</button>`}
+    const glyph={wp:'♟',wn:'♞',wb:'♝',wr:'♜',wq:'♛',wk:'♚',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};let html='';
+    for(const rank of ranks)for(const file of files){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1,isEdgeFile=file===files[0],isEdgeRank=rank===ranks.at(-1),classes=['square-2d',dark?'dark':'light'];if(this.lastMove&&square===this.lastMove.slice(0,2))classes.push('last-from');if(this.lastMove&&square===this.lastMove.slice(2,4))classes.push('last-to');if(square===this.checkSquare)classes.push('in-check');if(square===this.selected)classes.push('selected');if(this.destinations.includes(square))classes.push(piece?'capture':'legal');html+=`<button type="button" class="${classes.join(' ')}" data-square="${square}" aria-label="${square}">${piece?`<span class="piece-2d ${piece.color==='w'?'white':'black'}">${glyph[piece.color+piece.type]}</span>`:''}${isEdgeFile?`<small class="coord-2d coord-rank">${rank}</small>`:''}${isEdgeRank?`<small class="coord-2d coord-file">${file}</small>`:''}</button>`}
     this.element.innerHTML=html;
   }
   showMoves(selected,destinations=[]){this.selected=selected;this.destinations=destinations;this.render()}
@@ -275,6 +282,36 @@ class ChessBoard2D {
   }
 }
 
+function checkedKingSquare(chess){
+  if(!chess?.isCheck?.())return '';const checkedColor=chess.turn();
+  for(const row of chess.board())for(const piece of row)if(piece?.type==='k'&&piece.color===checkedColor)return piece.square;
+  return '';
+}
+function historyPosition(ply){
+  const chess=new Chess(),moves=state.game?.move_history||[],safePly=Math.max(0,Math.min(ply,moves.length));
+  for(let index=0;index<safePly;index++){try{chess.move(moveObject(moves[index].uci))}catch{break}}
+  return {chess,ply:safePly,lastMove:safePly?moves[safePly-1]?.uci||'':''};
+}
+function showPositionHighlights(chess=state.chess,lastMove=''){
+  state.board?.showPositionHighlights?.(lastMove,checkedKingSquare(chess));
+}
+function renderHistoryControls(){
+  if(!state.game)return;const total=state.game.move_history?.length||0,viewing=state.historyPly===null?total:state.historyPly,isLive=state.historyPly===null;
+  $('#history-back').disabled=viewing<=0;$('#history-forward').disabled=isLive||viewing>=total;$('#history-live').classList.toggle('live',isLive);$('#history-live span').textContent=isLive?'LIVE':`${viewing}/${total}`;$('#board-stage').classList.toggle('history-mode',!isLive);
+  $$('.move-jump').forEach(button=>button.classList.toggle('current',!isLive&&Number(button.dataset.ply)===viewing));
+  if(!isLive)$('#turn-banner').textContent=`TARIX · ${viewing}/${total}`;
+}
+function renderHistoryPosition(){
+  if(state.historyPly===null||!state.game)return;const position=historyPosition(state.historyPly);state.historyPly=position.ply;state.board.load(position.chess.fen());state.board.clearMarkers();showPositionHighlights(position.chess,position.lastMove);renderHistoryControls();
+}
+function setHistoryPly(ply){
+  if(!state.game||state.replaying||state.moving)return;const total=state.game.move_history?.length||0;
+  state.selected=null;state.legal=[];state.premove=null;$('#premove-banner').classList.add('hidden');
+  if(ply>=total){state.historyPly=null;state.board.load(state.game.fen);state.board.clearMarkers();showPositionHighlights(state.chess,state.game.move_history?.at(-1)?.uci||'');renderGame();return}
+  state.historyPly=Math.max(0,ply);renderHistoryPosition();
+}
+function stepHistory(delta){const total=state.game?.move_history?.length||0,current=state.historyPly===null?total:state.historyPly;setHistoryPly(current+delta)}
+
 function setBoardMode(mode,{render=true,notify=false}={}){
   mode=mode==='2d'?'2d':'3d';state.boardMode=mode;try{localStorage.setItem('zamin-board-mode',mode)}catch{}
   $$('.board-mode-options button').forEach(button=>button.classList.toggle('active',button.dataset.boardMode===mode));
@@ -283,7 +320,8 @@ function setBoardMode(mode,{render=true,notify=false}={}){
   const stage=$('#board-stage');stage.classList.toggle('mode-2d',mode==='2d');
   if(mode==='2d'){state.board2d||=new ChessBoard2D(stage);state.board=state.board2d;if(state.board3d)state.board3d.active=false}
   else{state.board3d||=new ChessArena3D(stage);state.board3d.active=true;state.board=state.board3d}
-  state.board.orient(state.game.my_color);state.board.load(state.game.fen);state.selected=null;state.legal=[];
+  state.board.orient(state.game.my_color);state.selected=null;state.legal=[];
+  if(state.historyPly===null){state.board.load(state.game.fen);showPositionHighlights(state.chess,state.game.move_history?.at(-1)?.uci||'')}else renderHistoryPosition();
   if(notify)toast(`${mode.toUpperCase()} ko‘rinish yoqildi`,'good');
 }
 
@@ -297,6 +335,7 @@ async function initialize() {
     state.config=await api('/api/config');
     const launchFragment=new URLSearchParams(location.hash.slice(1));
     const launchQuery=new URLSearchParams(location.search);
+    const telegramInitData=tg?.initData||launchFragment.get('tgWebAppData')||launchQuery.get('tgWebAppData')||'';
     const watchCode=(launchQuery.get('watch')||'').trim().toUpperCase();
     if(watchCode){
       state.spectator=true;state.user={id:'spectator'};bindUI();setBoardMode(state.boardMode,{render:false});
@@ -305,7 +344,7 @@ async function initialize() {
     const launchTicket=launchQuery.get('ticket')||launchFragment.get('ticket')||'';
     const fragmentStartParam=launchQuery.get('startapp')||launchFragment.get('startapp')||'';
     const session=await api('/api/session',{method:'POST',body:JSON.stringify({
-      init_data:tg?.initData||'',
+      init_data:telegramInitData,
       launch_ticket:launchTicket,
     })});
     // Remove the short-lived credential from the address after it is accepted.
@@ -323,7 +362,9 @@ async function initialize() {
   } catch(error) {
     $('#boot').classList.add('out'); $('#app').classList.remove('hidden');
     setTimeout(()=>$('#boot')?.remove(),500); toast(error.message,'error');
-    document.body.insertAdjacentHTML('beforeend',`<div class="modal-backdrop"><div class="modal"><div class="modal-symbol">♞</div><h2>Telegram orqali oching</h2><p>${escapeHtml(error.message)}</p><small>Bot chatiga qayting, /start yuboring va bot yuborgan yangi ARENANI OCHISH tugmasini bosing.</small></div></div>`);
+    const directUrl=state.config?.direct_app_url||'';
+    document.body.insertAdjacentHTML('beforeend',`<div class="modal-backdrop"><div class="modal"><div class="modal-symbol">♞</div><h2>Telegram Mini App orqali oching</h2><p>${escapeHtml(error.message)}</p>${directUrl?'<button id="direct-app-open" class="primary-btn wide">MINI APP’NI TO‘G‘RI OCHISH →</button>':''}<small>BotFather’dagi Main Mini App short name va URL to‘g‘ri sozlangan bo‘lishi kerak. Yoki botga /start yuborib ARENANI OCHISH tugmasini bosing.</small></div></div>`);
+    if(directUrl)$('#direct-app-open').onclick=()=>{if(tg?.openTelegramLink)tg.openTelegramLink(directUrl);else window.open(directUrl,'_self')};
   }
 }
 
@@ -357,6 +398,7 @@ function bindUI() {
   $('#join-clan').onsubmit=joinClan;
   $('#review-game').onclick=showGameReview;$('#replay-game').onclick=playCinematicReplay;$('#rematch-game').onclick=createRematch;
   $('#share-spectator').onclick=shareSpectator;
+  $('#history-back').onclick=()=>stepHistory(-1);$('#history-forward').onclick=()=>stepHistory(1);$('#history-live').onclick=()=>setHistoryPly(state.game?.move_history?.length||0);
   document.addEventListener('pointerdown',()=>audio.wake(),{once:true});
 }
 
@@ -375,7 +417,7 @@ function renderArmory(){const xp=Number(state.profile?.army_xp||0),level=Math.fl
 
 function dailyPuzzle(){const day=Math.floor(Date.now()/86400000);return PUZZLES[day%PUZZLES.length]}
 function puzzleMarkup(chess,selected=''){
-  const glyph={wp:'♙',wn:'♘',wb:'♗',wr:'♖',wq:'♕',wk:'♔',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};let html='';
+  const glyph={wp:'♟',wn:'♞',wb:'♝',wr:'♜',wq:'♛',wk:'♚',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};let html='';
   for(const rank of [8,7,6,5,4,3,2,1])for(const file of 'abcdefgh'){const square=`${file}${rank}`,piece=chess.get(square),dark=(file.charCodeAt(0)-97+rank)%2===1;html+=`<button type="button" class="square-2d ${dark?'dark':'light'} ${selected===square?'selected':''}" data-puzzle-square="${square}">${piece?`<span class="piece-2d ${piece.color==='w'?'white':'black'}">${glyph[piece.color+piece.type]}</span>`:''}</button>`}return html;
 }
 function openDailyPuzzle(){state.puzzle={...dailyPuzzle(),selected:'',chess:new Chess(dailyPuzzle().fen),completed:false};state.puzzleStartedAt=Date.now();$('#puzzle-title').textContent=state.puzzle.title;$('#puzzle-task').textContent='Oqlar yuradi. Eng kuchli yurishni toping.';$('#puzzle-modal-streak').textContent=state.profile?.puzzle_streak||0;renderPuzzle();openModal('#puzzle-modal')}
@@ -424,7 +466,7 @@ async function joinChallenge(raw){
 function shareChallenge(){
   const text=`⚔️ Men sizni ZAMIN 3D Chess jangiga chorlayman!\n\nChallenge kodi: ${state.game?.code}\nTaxtada ko‘rishamiz.`;
   const url=`https://t.me/share/url?url=${encodeURIComponent(state.shareUrl)}&text=${encodeURIComponent(text)}`;
-  tg?.openTelegramLink?.(url) || window.open(url,'_blank');
+  if(tg?.openTelegramLink)tg.openTelegramLink(url);else window.open(url,'_blank');
 }
 async function copyChallenge(){try{await navigator.clipboard.writeText(state.shareUrl);toast('Havola nusxalandi','good')}catch{toast(state.shareUrl)}}
 
@@ -440,7 +482,7 @@ async function subscribe(gameId){
 }
 
 async function enterGame(game){
-  state.game=game;state.chess=new Chess(game.fen);state.selected=null;state.premove=null;state.replaying=false;state.resultSynced=false;state.timeoutClaimed=false;
+  state.game=game;state.chess=new Chess(game.fen);state.selected=null;state.premove=null;state.replaying=false;state.historyPly=null;state.resultSynced=false;state.timeoutClaimed=false;
   if(state.heroArena)state.heroArena.active=false;
   $('.game-panel').classList.remove('open');
   $('#lobby').classList.add('hidden');$('#game').classList.remove('hidden');$('#game-code').textContent=game.code;
@@ -457,9 +499,10 @@ async function updateGame(game){
   if(game.version<=state.game.version)return;
   const old=state.game,last=game.move_history?.at(-1),moveDelta=(game.move_history?.length||0)-(old.move_history?.length||0),hasNewMove=moveDelta>0;
   state.game=game;state.timeoutClaimed=false;
+  if(state.historyPly!==null){state.chess=new Chess(game.fen);renderGame();if(hasNewMove){if(last?.san?.includes('+')||last?.san?.includes('#'))audio.check();else audio.move();toast('Yangi yurish keldi · LIVE tugmasi bilan qayting','good')}maybeAiMove();return}
   if(hasNewMove&&last){state.moving=true;if(moveDelta===1){await state.board.animateMove(last.uci,last.san.includes('x'));state.board.commitMove(last.uci,game.fen)}else state.board.load(game.fen);state.moving=false;if(last.san.includes('+')||last.san.includes('#'))audio.check()}
   else if(game.fen!==old.fen)state.board.load(game.fen);
-  state.chess=new Chess(game.fen);renderGame();if(!state.spectator)tryExecutePremove();maybeAiMove();
+  state.chess=new Chess(game.fen);showPositionHighlights(state.chess,last?.uci||'');renderGame();if(!state.spectator)tryExecutePremove();maybeAiMove();
 }
 
 function renderGame(){
@@ -470,15 +513,16 @@ function renderGame(){
   $('#turn-banner').style.borderColor=active?'#b89152':'#40444c';
   const moves=g.move_history||[],list=$('#moves-list');
   if(!moves.length)list.innerHTML='<div class="moves-empty">Birinchi yurish tarixni boshlaydi.</div>';
-  else{let html='';for(let i=0;i<moves.length;i+=2)html+=`<div class="move-row"><span>${i/2+1}.</span><b>${escapeHtml(moves[i]?.san||'')}</b><b>${escapeHtml(moves[i+1]?.san||'')}</b></div>`;list.innerHTML=html;list.scrollTop=list.scrollHeight}
+  else{let html='';for(let i=0;i<moves.length;i+=2)html+=`<div class="move-row"><span>${i/2+1}.</span><button class="move-jump" data-ply="${i+1}">${escapeHtml(moves[i]?.san||'')}</button>${moves[i+1]?`<button class="move-jump" data-ply="${i+2}">${escapeHtml(moves[i+1].san||'')}</button>`:'<i></i>'}</div>`;list.innerHTML=html;$$('.move-jump',list).forEach(button=>button.onclick=()=>{setHistoryPly(Number(button.dataset.ply));if(innerWidth<=900)$('.game-panel').classList.remove('open')});if(state.historyPly===null)list.scrollTop=list.scrollHeight}
   const offer=g.draw_offer_by&&g.draw_offer_by!==String(state.user.id);$('#draw-offer').classList.toggle('hidden',!offer);
   $$('[data-action="offer_draw"],[data-action="resign"]').forEach(button=>button.disabled=state.spectator||g.status!=='active');
   if(!state.spectator&&!['waiting','active'].includes(g.status)&&!state.resultSynced){state.resultSynced=true;loadRecent()}
   if(!['waiting','active'].includes(g.status)&&!state.replaying&&!$('#result-modal:not(.hidden)')&&!$('#review-modal:not(.hidden)'))showResult(g);
+  renderHistoryControls();
 }
 
 function onSquare(square){
-  const g=state.game;if(!g||state.spectator||state.replaying||g.status!=='active'||state.moving||state.aiThinking)return;if(g.turn!==g.my_color){handlePremove(square);return}
+  const g=state.game;if(!g||state.spectator||state.replaying||state.historyPly!==null||g.status!=='active'||state.moving||state.aiThinking)return;if(g.turn!==g.my_color){handlePremove(square);return}
   const piece=state.chess.get(square),myColor=g.my_color[0];
   if(!state.selected){if(piece?.color===myColor)selectSquare(square);return}
   if(piece?.color===myColor){selectSquare(square);return}
@@ -513,8 +557,8 @@ async function submitMove(from,to,moveInfo){
   const optimisticGame={...snapshot,fen:optimisticChess.fen(),turn:optimisticChess.turn()==='w'?'white':'black',last_move_at:new Date().toISOString(),move_history:[...(snapshot.move_history||[]),{uci,san:localMove.san,by:String(state.user.id),pending:true}]};
   state.game=optimisticGame;state.chess=optimisticChess;renderGame();tg?.HapticFeedback?.impactOccurred?.('light');
   const serverReply=api(`/api/games/${snapshot.id}/move`,{method:'POST',body:JSON.stringify({uci,expected_version:snapshot.version})});
-  try{await state.board.animateMove(uci,!!localMove.captured);state.board.commitMove(uci,optimisticGame.fen);state.moving=false;const data=await serverReply;await updateGame(data.game)}
-  catch(e){state.moving=false;state.game=snapshot;state.chess=new Chess(snapshot.fen);state.board.load(snapshot.fen);renderGame();toast(e.message,'error');try{const fresh=await api(`/api/games/${snapshot.id}`);if(fresh.game.version>snapshot.version)await updateGame(fresh.game)}catch{}}
+  try{await state.board.animateMove(uci,!!localMove.captured);state.board.commitMove(uci,optimisticGame.fen);showPositionHighlights(optimisticChess,uci);if(localMove.san.includes('+')||localMove.san.includes('#'))audio.check();state.moving=false;const data=await serverReply;await updateGame(data.game)}
+  catch(e){state.moving=false;state.game=snapshot;state.chess=new Chess(snapshot.fen);state.board.load(snapshot.fen);showPositionHighlights(state.chess,snapshot.move_history?.at(-1)?.uci||'');renderGame();toast(e.message,'error');try{const fresh=await api(`/api/games/${snapshot.id}`);if(fresh.game.version>snapshot.version)await updateGame(fresh.game)}catch{}}
 }
 
 function evaluate(chess){
@@ -582,13 +626,13 @@ function showGameReview(){
 }
 async function playCinematicReplay(){
   const game=state.game;if(!game?.move_history?.length||state.replaying)return toast('Replay uchun hali yurish yo‘q','error');
-  $('#result-modal').classList.add('hidden');state.replaying=true;state.premove=null;$('#premove-banner').classList.add('hidden');const replay=new Chess();state.board.load(replay.fen());$('#turn-banner').textContent='KINEMATIK REPLAY';
+  $('#result-modal').classList.add('hidden');state.replaying=true;state.historyPly=null;state.premove=null;$('#premove-banner').classList.add('hidden');renderHistoryControls();const replay=new Chess();state.board.load(replay.fen());showPositionHighlights(replay,'');$('#turn-banner').textContent='KINEMATIK REPLAY';
   for(const recorded of game.move_history){
     if(!state.replaying||state.game?.id!==game.id)return;
     let played;try{played=replay.move(moveObject(recorded.uci))}catch{played=null}if(!played)continue;
-    await state.board.animateMove(recorded.uci,Boolean(played.captured));state.board.commitMove(recorded.uci,replay.fen());await sleep(state.performanceMode==='battery'?45:110);
+    await state.board.animateMove(recorded.uci,Boolean(played.captured));state.board.commitMove(recorded.uci,replay.fen());showPositionHighlights(replay,recorded.uci);await sleep(state.performanceMode==='battery'?45:110);
   }
-  state.replaying=false;state.board.load(game.fen);$('#turn-banner').textContent='JANG YAKUNLANDI';showResult(game);
+  state.replaying=false;state.board.load(game.fen);showPositionHighlights(new Chess(game.fen),game.move_history?.at(-1)?.uci||'');$('#turn-banner').textContent='JANG YAKUNLANDI';showResult(game);
 }
 async function createRematch(){
   if(!state.game||state.spectator)return;
@@ -601,7 +645,7 @@ function shareSpectator(){
 }
 
 async function leaveGame(){
-  if(state.socketPing){clearInterval(state.socketPing);state.socketPing=null}if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null}state.realtimeLive=false;state.replaying=false;state.game=null;if(state.board3d)state.board3d.active=false;
+  if(state.socketPing){clearInterval(state.socketPing);state.socketPing=null}if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null}state.realtimeLive=false;state.replaying=false;state.historyPly=null;state.game=null;if(state.board3d)state.board3d.active=false;
   if(state.spectator){tg?.close?.();if(!tg)setTimeout(()=>{location.href='/'},50);return}
   if(state.heroArena)state.heroArena.active=true;$('#game').classList.add('hidden');$('#lobby').classList.remove('hidden');$('#result-modal').classList.add('hidden');await loadRecent();
 }
