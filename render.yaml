@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: zamin-3d-chess
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: BOT_APP_SHORT_NAME
+        value: play
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: APP_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: APP_SECRET
+        generateValue: true
+      - key: DEV_AUTH
+        value: "false"
