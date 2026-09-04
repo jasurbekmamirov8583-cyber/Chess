@@ -79,27 +79,22 @@ Start: uvicorn server:app --host 0.0.0.0 --port $PORT
 Health: /api/health
 ```
 
-## 4. Telegram webhook’ni ulash
+## 4. Telegram webhook
 
-PowerShell’da `<...>` qismlarni o‘zingiznikiga almashtirib bajaring:
+Qo‘lda buyruq bajarish shart emas. Har bir Render deploy vaqtida backend avtomatik ravishda:
 
-```powershell
-$body = @{
-  url = "https://<SERVICE>.onrender.com/telegram/webhook"
-  secret_token = "<TELEGRAM_WEBHOOK_SECRET>"
-  allowed_updates = @("message")
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -ContentType "application/json" -Body $body
-```
+- webhook’ni `APP_URL/telegram/webhook` manziliga o‘rnatadi;
+- `/start`, `/play` va `/privacy` buyruqlarini ro‘yxatdan o‘tkazadi;
+- chat pastidagi `3D SHAXMAT` Web App menyu tugmasini yaratadi.
 
-Tekshirish:
+Render logida quyidagilar ko‘rinishi kerak:
 
 ```text
-https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo
-https://<SERVICE>.onrender.com/api/health
+Telegram webhook configured: https://<SERVICE>.onrender.com/telegram/webhook
+Telegram Web App menu button configured
 ```
 
-Keyin botga `/start` yuboring. Bot telefonni Telegram’ning rasmiy `request_contact` tugmasi bilan oladi. Foydalanuvchi Web App’ni to‘g‘ridan-to‘g‘ri ochsa ham, ism va xalqaro formatdagi telefon kiritilmaguncha o‘yin yaratish/yopiq challenge’ga qo‘shilish bloklanadi.
+So‘ng botga `/start` yuboring. Bot telefonni Telegram’ning rasmiy `request_contact` tugmasi bilan oladi. Foydalanuvchi Web App’ni to‘g‘ridan-to‘g‘ri ochsa ham, ism va xalqaro formatdagi telefon kiritilmaguncha o‘yin yaratish/yopiq challenge’ga qo‘shilish bloklanadi.
 
 ## Xavfsizlik modeli
 
@@ -123,4 +118,3 @@ Xato chiqsa quyidagilarni yuboring (secret qiymatlarini yashiring):
 - `/api/health` javobi;
 - Supabase SQL Editor ko‘rsatgan xato bo‘lsa, to‘liq xabar;
 - muammo `/start`, profil, game yaratish, join yoki yurishda ekanini.
-

@@ -19,7 +19,7 @@ import httpx
 import jwt
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -32,7 +32,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "")
 BOT_APP_SHORT_NAME = os.getenv("BOT_APP_SHORT_NAME", "play")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
-APP_URL = os.getenv("APP_URL", "http://localhost:8000").rstrip("/")
+RENDER_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
+APP_URL = (os.getenv("APP_URL") or (f"https://{RENDER_HOSTNAME}" if RENDER_HOSTNAME else "http://localhost:8000")).rstrip("/")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
@@ -217,6 +218,11 @@ async def require_profile(user_id: str) -> dict[str, Any]:
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(ROOT / "static" / "index.html")
+
+
+@app.head("/")
+async def index_head() -> Response:
+    return Response(status_code=200)
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -531,13 +537,60 @@ async def game_action(game_id: UUID, body: ActionRequest, user: dict[str, str] =
     return {"game": public_game(rows[0], user["id"])}
 
 
-async def telegram(method: str, payload: dict[str, Any]) -> None:
+async def telegram(method: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     if not BOT_TOKEN:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", json=payload)
+        data = response.json()
+        if response.status_code >= 400 or not data.get("ok"):
+            log.error("Telegram %s failed: %s", method, response.text)
+            return None
+        return data
+    except (httpx.HTTPError, ValueError) as exc:
+        log.error("Telegram %s connection failed: %s", method, exc)
+        return None
+
+
+@app.on_event("startup")
+async def configure_telegram_bot() -> None:
+    """Configure Telegram automatically on every Render deploy."""
+    if not BOT_TOKEN:
+        log.warning("BOT_TOKEN is missing; Telegram bot is disabled")
         return
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", json=payload)
-    if response.status_code >= 400:
-        log.error("Telegram %s: %s", method, response.text)
+    if not APP_URL.startswith("https://"):
+        log.warning("APP_URL must be the public https Render URL; got %s", APP_URL)
+        return
+
+    webhook_payload: dict[str, Any] = {
+        "url": f"{APP_URL}/telegram/webhook",
+        "allowed_updates": ["message"],
+        "drop_pending_updates": False,
+    }
+    if WEBHOOK_SECRET:
+        webhook_payload["secret_token"] = WEBHOOK_SECRET
+
+    webhook = await telegram("setWebhook", webhook_payload)
+    if webhook:
+        log.info("Telegram webhook configured: %s/telegram/webhook", APP_URL)
+
+    await telegram("setMyCommands", {
+        "commands": [
+            {"command": "start", "description": "3D shaxmat arenasini ochish"},
+            {"command": "play", "description": "O'yinni boshlash"},
+            {"command": "privacy", "description": "Maxfiylik siyosati"},
+        ]
+    })
+    menu = await telegram("setChatMenuButton", {
+        "menu_button": {
+            "type": "web_app",
+            "text": "3D SHAXMAT",
+            "web_app": {"url": APP_URL},
+        }
+    })
+    if menu:
+        log.info("Telegram Web App menu button configured")
 
 
 @app.post("/telegram/webhook")
@@ -571,8 +624,16 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
         })
     elif str(message.get("text", "")).startswith("/privacy"):
         await telegram("sendMessage", {"chat_id": chat_id, "text": f"Maxfiylik siyosati: {APP_URL}/privacy"})
-    elif str(message.get("text", "")).startswith("/start"):
-        existing = await profile_for(str(user["id"]))
+    elif str(message.get("text", "")).startswith(("/start", "/play")):
+        try:
+            existing = await profile_for(str(user["id"]))
+        except HTTPException:
+            log.exception("Profile lookup failed during Telegram onboarding")
+            await telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": "Bot ishga tushdi, ammo ma'lumotlar bazasiga ulanishda xato bor. Administrator Render'dagi Supabase kalitlarini tekshirishi kerak.",
+            })
+            return JSONResponse({"ok": True})
         if existing:
             await telegram("sendMessage", {
                 "chat_id": chat_id, "text": f"Qaytganingizdan xursandmiz, {existing['full_name']}!",
