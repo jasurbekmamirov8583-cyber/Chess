@@ -7,18 +7,21 @@ Telegram Mini App ichida ishlaydigan, GPU’da chiziladigan 3D shaxmat. Backend 
 - To‘liq legal yurishlar: rokировка, en passant, promotion (queen/rook/bishop/knight), shax va mot.
 - Pat, yetarli bo‘lmagan material, 3/5 karra takrorlanish, 50/75 yurish qoidalari.
 - Server-authoritative yurish tekshiruvi (`python-chess`) va versiya orqali parallel yurishdan himoya.
-- Har biri keskin farqlanadigan procedural Staunton 3D donalari, mobilga mos avtomatik kamera, yoritish, soyalar va legal katak indikatorlari.
+- Har biri keskin farqlanadigan procedural Staunton 3D donalari, qora donalarni aniq ajratadigan yorug‘ arena, kuchli old yoritish, mobilga mos kamera va legal katak indikatorlari.
 - Foydalanuvchi tanlaydigan klassik yashil 2D taxta yoki kinematik 3D arena; tanlov qurilmada eslab qolinadi va o‘yin davomida ham almashtiriladi.
+- 2D’da katakni to‘ldiradigan yirik, ichi to‘liq oq/qora siluetlar; 2D va 3D’da oxirgi yurish hamda shax ostidagi shoh katagi alohida yoritiladi.
+- Jonli o‘yin davomida tarix bo‘ylab orqaga-oldinga ko‘rish, yurish yozuviga bosib sakrash va bir tegishda `LIVE` pozitsiyaga qaytish.
 - Optimistic yurish: dona server javobini kutmasdan darhol siljiydi, server rad etsa ishonchli holat avtomatik tiklanadi.
-- Urib olishda qurol, sakrash va yiqilish animatsiyasi; yurish, zarba, shax, g‘alaba, mag‘lubiyat va durang uchun qatlamli Web Audio tovushlari.
+- Urib olishda qurol, sakrash va yiqilish animatsiyasi; yurish va urishda klassik yog‘och dona zarbasi uslubidagi Web Audio tovushlari.
+- O‘yin yakunida taxta yopilmaydi: 2D shoh egilish impulsi, 3D shoh yiqilishi, taxta ichidagi natija animatsiyasi hamda darhol replay/tahlil/revansh amallari ko‘rinadi.
 - 4 darajali brauzer AI. Hisob foydalanuvchi qurilmasida bajariladi, Render CPU’sini band qilmaydi.
-- Telegram challenge linki va 7 belgili kod orqali multiplayer.
+- Telegram challenge linki va 7 belgili kod orqali multiplayer; do‘st botdagi `Start`ni bosishi bilan aynan o‘sha challenge serverda qabul qilinadi.
 - FastAPI WebSocket orqali yurishlarni jonli qabul qilish; uzilishda avtomatik HTTP fallback.
 - 3+0, 10+3 va 15+10 vaqt nazoratlari, server nazoratidagi timeout, ko‘rinadigan durang/taslim bo‘lish amallari.
 - Uch karra pozitsiya takrorlanishi va 50 yurish holati avtomatik durang; besh karra/75 yurish, pat va material yetishmasligi ham serverda tekshiriladi.
 - Profil, telefon, ELO, natijalar, FEN va har bir yurish Supabase’da saqlanadi.
 - Mobil Telegram oynasi va desktop uchun alohida responsive ko‘rinish.
-- Premove, avtomatik qayta ulanish va Supabase’dan holatni tiklash: Telegram yopilsa ham jang va soatlar davom etadi.
+- Premove, avtomatik qayta ulanish, saqlangan xavfsiz sessiya va faol jangni tiklash: ulashish oynasi Telegram Mini App’ni minimallashtirsa ham qaytilganda aynan o‘sha taxta ochiladi, jang va soatlar davom etadi.
 - Jonli tomoshabin rejimi, online ishtirokchilar soni va Telegram’da yuboriladigan xavfsiz `?watch=` havolasi.
 - Kinematik replay, revansh va brauzerda ishlaydigan ZAMIN Coach: aniqlik foizi, burilish nuqtalari va yurish tasnifi.
 - Har kuni almashadigan taktik ekspeditsiya, vaqt, puzzle reytingi, kunlik seriya va Army XP.
@@ -58,6 +61,8 @@ requirements.txt   — Python paketlari
 2. `/newapp` orqali shu bot uchun Mini App yarating. Short name sifatida, masalan, `play` yozing.
 3. Render deploy tugagach Mini App URL’iga `https://SIZNING-SERVICE.onrender.com` ni kiriting.
 4. Bot username’ini `@` belgisiz saqlang.
+
+Bot profilidagi `Open App` tugmasi uchun oddiy Website maydonini emas, `@BotFather → /mybots → Bot Settings → Configure Mini App → Enable Mini App` bo‘limini sozlang. Shu yerda URL sifatida Render manzilini va short name sifatida `BOT_APP_SHORT_NAME` bilan bir xil qiymatni (`play`) kiriting. To‘g‘ri direct Mini App havolasi `https://t.me/BOT_USERNAME/play` ko‘rinishida bo‘ladi; xom Render URL’ini oddiy link sifatida ochish Telegram foydalanuvchi imzosini bermaydi.
 
 Kerakli qiymatlar:
 

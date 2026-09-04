@@ -118,6 +118,14 @@ class Store:
                 database_error = response.json()
             except ValueError:
                 database_error = {}
+            if database_error.get("code") == "PGRST204":
+                message = str(database_error.get("message", ""))
+                missing = re.search(r"Could not find the '([^']+)' column of '([^']+)'", message)
+                detail = f"{missing.group(2)}.{missing.group(1)}" if missing else "yangi ustun"
+                raise HTTPException(
+                    503,
+                    f"Supabase sxemasi eski: {detail} topilmadi. Yangilangan schema.sql faylini SQL Editor'da to'liq Run qiling.",
+                )
             if database_error.get("code") == "PGRST205":
                 raise HTTPException(
                     503,
@@ -422,6 +430,11 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.head("/api/health")
+async def health_head() -> Response:
+    return Response(status_code=200)
+
+
 @app.get("/api/config")
 async def config() -> dict[str, Any]:
     return {
@@ -430,6 +443,10 @@ async def config() -> dict[str, Any]:
         "dev_auth": DEV_AUTH,
         "variants": ["standard", "kingofthehill", "threecheck"],
         "themes": ["registan", "cyber", "ice", "volcano"],
+        "direct_app_url": (
+            f"https://t.me/{BOT_USERNAME}/{BOT_APP_SHORT_NAME}"
+            if BOT_USERNAME and BOT_APP_SHORT_NAME else ""
+        ),
     }
 
 
@@ -456,6 +473,16 @@ async def session(body: SessionRequest) -> dict[str, Any]:
     return {
         "token": make_token(telegram_user),
         "user": telegram_user,
+        "profile": profile,
+        "registered": bool(profile and profile.get("phone")),
+    }
+
+
+@app.get("/api/session/restore")
+async def restore_session(user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    profile = await profile_for(user["id"])
+    return {
+        "user": {"id": user["id"]},
         "profile": profile,
         "registered": bool(profile and profile.get("phone")),
     }
@@ -562,28 +589,35 @@ async def create_game(body: GameCreateRequest, user: dict[str, str] = Depends(cu
     return {"game": public_game(game, user["id"]), "share_url": share_url}
 
 
-@app.post("/api/challenges/{challenge_code}/join")
-async def join_game(challenge_code: str, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-    profile = await require_profile(user["id"])
+async def claim_challenge(challenge_code: str, user_id: str, full_name: str) -> dict[str, Any]:
     challenge_code = challenge_code.upper().strip()
     if not re.fullmatch(r"[A-Z1-9]{7}", challenge_code):
         raise HTTPException(422, "Challenge kodi 7 belgidan iborat")
     game = await store.one("games", {"code": f"eq.{challenge_code}", "select": "*"})
     if not game:
         raise HTTPException(404, "Challenge topilmadi")
-    if game["white_id"] == user["id"]:
-        return {"game": public_game(game, user["id"])}
-    if game.get("black_id") and game["black_id"] != user["id"]:
+    if game["white_id"] == user_id or game.get("black_id") == user_id:
+        return game
+    if game.get("black_id"):
         raise HTTPException(409, "Bu challenge allaqachon qabul qilingan")
+    if game.get("status") != "waiting":
+        raise HTTPException(409, "Bu challenge endi faol emas")
     rows = await store.call(
         "PATCH", "games",
         params={"id": f"eq.{game['id']}", "black_id": "is.null", "status": "eq.waiting"},
-        body={"black_id": user["id"], "black_name": profile["full_name"], "status": "active", "last_move_at": iso(), "updated_at": iso(), "version": game["version"] + 1},
+        body={"black_id": user_id, "black_name": full_name, "status": "active", "last_move_at": iso(), "updated_at": iso(), "version": game["version"] + 1},
     )
     if not rows:
         raise HTTPException(409, "Challenge'ni boshqa o'yinchi qabul qildi")
     await game_sockets.broadcast(rows[0])
-    return {"game": public_game(rows[0], user["id"])}
+    return rows[0]
+
+
+@app.post("/api/challenges/{challenge_code}/join")
+async def join_game(challenge_code: str, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    profile = await require_profile(user["id"])
+    game = await claim_challenge(challenge_code, user["id"], profile["full_name"])
+    return {"game": public_game(game, user["id"])}
 
 
 @app.get("/api/games/{game_id}")
@@ -1181,15 +1215,24 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
                 "text": f"Telefon qabul qilindi, ammo bazaga saqlashda xato bor. {exc.detail}",
             })
             return JSONResponse({"ok": True})
+        challenge_code = pending_challenges.pop(user_key, "")
+        challenge_joined = False
+        if challenge_code:
+            try:
+                await claim_challenge(challenge_code, user_key, full_name)
+                challenge_joined = True
+            except HTTPException as exc:
+                await telegram("sendMessage", {"chat_id": chat_id, "text": f"Challenge'ga qo'shilmadi: {exc.detail}"})
         await telegram("sendMessage", {
-            "chat_id": chat_id, "text": "✅ Profil tayyor. Endi 3D arenaga kiring!",
+            "chat_id": chat_id,
+            "text": "✅ Profil tayyor. Challenge qabul qilindi va jang boshlandi!" if challenge_joined else "✅ Profil tayyor. Endi arenaga kiring!",
             "reply_markup": {"remove_keyboard": True},
         })
         await telegram("sendMessage", {
-            "chat_id": chat_id, "text": "♟ ZAMIN 3D CHESS — o'yinni boshlang",
+            "chat_id": chat_id, "text": "♟ ZAMIN CHESS — jangni oching",
             "reply_markup": {"inline_keyboard": [[{
-                "text": "⚔️ ARENANI OCHISH",
-                "web_app": {"url": launch_url(user_key, pending_challenges.pop(user_key, ""))},
+                "text": "⚔️ JANGNI OCHISH" if challenge_joined else "⚔️ ARENANI OCHISH",
+                "web_app": {"url": launch_url(user_key, challenge_code if challenge_joined else "")},
             }]]},
         })
     elif str(message.get("text", "")).startswith("/privacy"):
@@ -1222,11 +1265,20 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
             })
             return JSONResponse({"ok": True})
         if existing:
+            challenge_code = pending_challenges.pop(user_key, "")
+            challenge_joined = False
+            if challenge_code:
+                try:
+                    await claim_challenge(challenge_code, user_key, existing["full_name"])
+                    challenge_joined = True
+                except HTTPException as exc:
+                    await telegram("sendMessage", {"chat_id": chat_id, "text": f"Challenge'ga qo'shilmadi: {exc.detail}"})
             await telegram("sendMessage", {
-                "chat_id": chat_id, "text": f"Qaytganingizdan xursandmiz, {existing['full_name']}!",
+                "chat_id": chat_id,
+                "text": f"⚔️ {existing['full_name']}, challenge qabul qilindi — jang boshlandi!" if challenge_joined else f"Qaytganingizdan xursandmiz, {existing['full_name']}!",
                 "reply_markup": {"inline_keyboard": [[{
-                    "text": "♟ 3D SHAXMAT",
-                    "web_app": {"url": launch_url(user_key, pending_challenges.pop(user_key, ""))},
+                    "text": "⚔️ JANGNI OCHISH" if challenge_joined else "♟ SHAXMATNI OCHISH",
+                    "web_app": {"url": launch_url(user_key, challenge_code if challenge_joined else "")},
                 }]]},
             })
         else:

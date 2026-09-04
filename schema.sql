@@ -178,3 +178,6 @@ do $$ begin
   alter publication supabase_realtime add table public.games;
 exception when duplicate_object then null;
 end $$;
+
+-- Make newly added columns visible to the REST API immediately.
+notify pgrst, 'reload schema';
