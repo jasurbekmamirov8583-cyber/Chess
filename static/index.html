@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=3" />
+  <link rel="stylesheet" href="/static/style.css?v=5" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script type="importmap">
     {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"}}
@@ -65,6 +65,16 @@
           <p>Do‘stingiz yuborgan 7 belgili kodni kiriting.</p>
           <form id="join-form"><input id="join-code" maxlength="7" placeholder="MASALAN: 7KQ2PXA" autocomplete="off"/><button type="submit">KIRISH →</button></form>
         </section>
+
+        <section class="world-card glass">
+          <div class="section-head"><div><span class="eyebrow">ZAMIN DUNYOSI</span><h2>Armiyangizni rivojlantiring</h2></div><div class="level-medal"><b id="army-level">1</b><span>DARAJA</span></div></div>
+          <div class="world-actions">
+            <button data-feature="puzzle"><i>◆</i><b>KUNLIK SAFAR</b><span id="puzzle-streak">0 kunlik seriya</span></button>
+            <button data-feature="armory"><i>♛</i><b>ARMORY</b><span>Arena va evolyutsiya</span></button>
+            <button data-feature="social"><i>⚔</i><b>CLAN WAR</b><span>Jamoa va turnirlar</span></button>
+          </div>
+          <div class="xp-track"><i id="xp-progress"></i></div>
+        </section>
       </div>
       <footer><span>ZAMIN / TASHKENT</span><span>END-TO-END GAME LOGIC • LIVE WEBSOCKET • <a href="/privacy" style="color:inherit">MAXFIYLIK</a></span></footer>
     </section>
@@ -72,8 +82,8 @@
     <section id="game" class="view game-view hidden">
       <header class="game-header">
         <button id="leave-game" class="back-btn">← <span>ARENA</span></button>
-        <div class="game-id">JANG <b id="game-code">—</b><i id="live-indicator"></i></div>
-        <div class="header-tools"><button id="view-toggle" class="icon-btn" title="Kamerani aylantirish">◫</button><button id="panel-toggle" class="icon-btn" title="Yurishlar">☷</button></div>
+        <div class="game-id">JANG <b id="game-code">—</b><i id="live-indicator"></i><span id="presence-count"></span></div>
+        <div class="header-tools"><button id="mode-toggle" class="mode-toggle" title="2D/3D ko‘rinish">3D</button><button id="view-toggle" class="icon-btn" title="Taxtani aylantirish">◫</button><button id="panel-toggle" class="icon-btn" title="Yurishlar">☷</button></div>
       </header>
       <div class="battle-layout">
         <div class="arena-column">
@@ -82,9 +92,12 @@
             <div id="black-clock" class="clock">10:00</div>
           </div>
           <div id="board-stage" class="board-stage">
+            <div id="board-2d" class="board-2d" aria-label="2D shaxmat taxtasi"></div>
             <div class="rank-labels"><span>8</span><span>7</span><span>6</span><span>5</span><span>4</span><span>3</span><span>2</span><span>1</span></div>
             <div class="file-labels"><span>A</span><span>B</span><span>C</span><span>D</span><span>E</span><span>F</span><span>G</span><span>H</span></div>
             <div id="turn-banner" class="turn-banner">SIZNING YURISHINGIZ</div>
+            <div id="premove-banner" class="premove-banner hidden">OLDINDAN YURISH BELGILANDI</div>
+            <div id="spectator-banner" class="spectator-banner hidden">◉ TOMOSHABIN REJIMI</div>
             <div class="arena-vignette" aria-hidden="true"></div>
           </div>
           <div class="player-strip self">
@@ -109,6 +122,7 @@
             <button class="danger-action" data-action="resign" title="Taslim bo‘lish"><b>⚑</b><span>TASLIM BO‘LISH</span></button>
             <button data-sound-toggle title="Ovoz"><b>◖</b><span>OVOZ</span></button>
           </div>
+          <button id="share-spectator" class="spectator-share">◉ TOMOSHA HAVOLASINI YUBORISH</button>
         </aside>
       </div>
     </section>
@@ -131,6 +145,8 @@
     <div class="modal game-modal">
       <button class="modal-close">×</button><span class="eyebrow">YANGI JANG</span><h2 id="new-game-title">Do‘stni chorlash</h2>
       <div id="ai-options" class="option-block hidden"><label>RAQIB KUCHI</label><div class="segmented ai-levels"><button data-level="1">Yengil</button><button class="active" data-level="2">O‘rta</button><button data-level="3">Kuchli</button><button data-level="4">Usta</button></div></div>
+      <div class="option-block"><label>O‘YIN QOIDASI</label><div class="segmented variant-options"><button class="active" data-variant="standard"><b>Klassik</b><span>FIDE</span></button><button data-variant="kingofthehill"><b>Taxt</b><span>Markazdagi shoh</span></button><button data-variant="threecheck"><b>3× Shax</b><span>Uch shax — g‘alaba</span></button></div></div>
+      <div class="option-block"><label>TAXTA KO‘RINISHI</label><div class="segmented board-mode-options"><button data-board-mode="2d"><b>2D</b><span>Klassik</span></button><button data-board-mode="3d"><b>3D</b><span>Arena</span></button></div></div>
       <div class="option-block"><label>VAQT NAZORATI</label><div class="time-grid"><button data-time="180" data-inc="0"><b>3</b><span>MIN</span></button><button class="active" data-time="600" data-inc="3"><b>10</b><span>+3 SEC</span></button><button data-time="900" data-inc="10"><b>15</b><span>+10 SEC</span></button></div></div>
       <button id="create-game" class="primary-btn wide">JANGNI YARATISH →</button>
     </div>
@@ -141,10 +157,28 @@
   </div>
 
   <div id="result-modal" class="modal-backdrop hidden">
-    <div class="modal result-modal"><div id="result-icon" class="result-icon">♛</div><span class="eyebrow">JANG YAKUNI</span><h2 id="result-title">G‘ALABA</h2><p id="result-reason">Checkmate</p><button id="result-home" class="primary-btn wide">ARENAGA QAYTISH</button></div>
+    <div class="modal result-modal"><div id="result-icon" class="result-icon">♛</div><span class="eyebrow">JANG YAKUNI</span><h2 id="result-title">G‘ALABA</h2><p id="result-reason">Checkmate</p><div class="result-actions"><button id="review-game">◇ TAHLIL</button><button id="replay-game">▶ REPLAY</button><button id="rematch-game">↻ REVANSH</button></div><button id="result-home" class="primary-btn wide">ARENAGA QAYTISH</button></div>
   </div>
 
+  <div id="review-modal" class="modal-backdrop hidden">
+    <div class="modal review-modal"><button class="modal-close">×</button><span class="eyebrow">ZAMIN COACH</span><h2>Jang tahlili</h2><div class="review-summary"><div><b id="review-accuracy">—</b><span>ANIQLIK</span></div><p id="coach-summary">Yurishlaringiz tahlil qilinmoqda...</p></div><div id="review-chart" class="review-chart"></div><div id="review-list" class="review-list"></div></div>
+  </div>
+
+  <div id="puzzle-modal" class="modal-backdrop hidden">
+    <div class="modal puzzle-modal"><button class="modal-close">×</button><span class="eyebrow">KUNLIK EKSPEDITSIYA</span><h2 id="puzzle-title">Registon darvozasi</h2><p id="puzzle-task">Eng kuchli yurishni toping.</p><div id="puzzle-board" class="puzzle-board"></div><div class="puzzle-meta"><span>🔥 <b id="puzzle-modal-streak">0</b> kun</span><span>⏱ <b id="puzzle-time">0:00</b></span></div><button id="puzzle-hint" class="ghost-btn wide">ISHORA</button></div>
+  </div>
+
+  <div id="armory-modal" class="modal-backdrop hidden">
+    <div class="modal armory-modal"><button class="modal-close">×</button><span class="eyebrow">ARMORY</span><h2>O‘z arenangizni tanlang</h2><p>XP oshgani sari donalaringizda yangi toj, zirh va aura ochiladi.</p><div id="evolution-preview" class="evolution-preview"><b>♛</b><span id="evolution-name">Bronza qo‘shin</span><small id="evolution-xp">0 XP</small></div><div class="theme-grid"><button data-theme="registan"><i>☀</i><b>REGISTAN</b></button><button data-theme="cyber"><i>⌁</i><b>CYBER</b></button><button data-theme="ice"><i>❄</i><b>MUZLIK</b></button><button data-theme="volcano"><i>◆</i><b>VULQON</b></button></div><label class="performance-select">GRAFIKA REJIMI<select id="performance-mode"><option value="auto">Avtomatik</option><option value="quality">Yuqori sifat</option><option value="battery">Tejamkor</option></select></label></div>
+  </div>
+
+  <div id="social-modal" class="modal-backdrop hidden">
+    <div class="modal social-modal"><button class="modal-close">×</button><span class="eyebrow">ZAMIN ALLIANCE</span><h2>Clan va turnirlar</h2><div id="clan-zone" class="clan-zone"></div><div class="social-create"><input id="social-name" maxlength="48" placeholder="Jamoa yoki turnir nomi"/><div><button id="create-clan">JAMOA YARATISH</button><button id="create-tournament">TURNIR YARATISH</button></div><form id="join-clan"><input id="clan-code" maxlength="7" placeholder="JAMOA KODI"/><button>KIRISH</button></form></div><h3>Ochiq turnirlar</h3><div id="tournament-list" class="tournament-list"></div></div>
+  </div>
+
+  <div id="reconnect-banner" class="reconnect-banner hidden"><i></i><span>ALOQA QAYTA TIKLANMOQDA...</span></div>
+
   <div id="toast-stack" class="toast-stack"></div>
-  <script type="module" src="/static/app.js?v=3"></script>
+  <script type="module" src="/static/app.js?v=5"></script>
 </body>
 </html>
