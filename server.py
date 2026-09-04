@@ -11,7 +11,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlparse
 from uuid import UUID
 
 import chess
@@ -26,6 +26,32 @@ from pydantic import BaseModel, Field
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("zamin-chess")
+# Telegram bot token is part of the Bot API URL. Never print httpx request URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def normalize_supabase_url(raw: str) -> str:
+    """Accept a Project URL or derive it from common Supabase Postgres URLs."""
+    value = raw.strip().rstrip("/")
+    if value.startswith(("https://", "http://")):
+        return value
+    if value.startswith(("postgres://", "postgresql://")):
+        parsed = urlparse(value)
+        hostname = (parsed.hostname or "").lower()
+        username = parsed.username or ""
+        project_ref = ""
+        direct = re.fullmatch(r"db\.([a-z0-9-]+)\.supabase\.co", hostname)
+        if direct:
+            project_ref = direct.group(1)
+        elif hostname.endswith(".pooler.supabase.com") and username.startswith("postgres."):
+            project_ref = username.split(".", 1)[1]
+        if project_ref and re.fullmatch(r"[a-z0-9-]+", project_ref):
+            log.warning("SUPABASE_URL contained a database URL; derived the Project URL automatically")
+            return f"https://{project_ref}.supabase.co"
+    if value:
+        log.error("SUPABASE_URL is invalid; expected https://PROJECT_REF.supabase.co")
+    return ""
 
 ROOT = Path(__file__).parent
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -34,7 +60,7 @@ BOT_APP_SHORT_NAME = os.getenv("BOT_APP_SHORT_NAME", "play")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 RENDER_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
 APP_URL = (os.getenv("APP_URL") or (f"https://{RENDER_HOSTNAME}" if RENDER_HOSTNAME else "http://localhost:8000")).rstrip("/")
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_URL = normalize_supabase_url(os.getenv("SUPABASE_URL", ""))
 SUPABASE_KEY = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
 APP_SECRET = os.getenv("APP_SECRET", "")
@@ -74,8 +100,12 @@ class Store:
         request_args: dict[str, Any] = {"params": params, "headers": headers}
         if body is not None:
             request_args["json"] = body
-        async with httpx.AsyncClient(timeout=12) as client:
-            response = await client.request(method, f"{self.base}/{table}", **request_args)
+        try:
+            async with httpx.AsyncClient(timeout=12) as client:
+                response = await client.request(method, f"{self.base}/{table}", **request_args)
+        except httpx.HTTPError as exc:
+            log.error("Supabase connection failed: %s", type(exc).__name__)
+            raise HTTPException(502, "Supabase bilan ulanishda xato") from exc
         if response.status_code >= 400:
             log.error("Supabase %s %s: %s", method, table, response.text)
             raise HTTPException(502, "Ma'lumotlar bazasi xatosi")
@@ -225,6 +255,11 @@ async def index_head() -> Response:
     return Response(status_code=200)
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    return Response(status_code=204)
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy() -> str:
     return """<!doctype html><html lang='uz'><meta charset='utf-8'><meta name='viewport' content='width=device-width'>
@@ -239,7 +274,18 @@ async def privacy() -> str:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "service": "zamin-3d-chess", "supabase": store.configured, "time": iso()}
+    return {
+        "ok": True,
+        "service": "zamin-3d-chess",
+        "configuration": {
+            "supabase_url": bool(SUPABASE_URL.startswith("https://")),
+            "supabase_publishable_key": bool(SUPABASE_ANON_KEY),
+            "supabase_secret_key": bool(SUPABASE_KEY),
+            "telegram_bot_token": bool(BOT_TOKEN),
+            "app_url": bool(APP_URL.startswith("https://")),
+        },
+        "time": iso(),
+    }
 
 
 @app.get("/api/config")
@@ -258,11 +304,14 @@ async def session(body: SessionRequest) -> dict[str, Any]:
     telegram_user = verify_init_data(body.init_data)
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         raise HTTPException(503, "Supabase public kaliti sozlanmagan")
-    async with httpx.AsyncClient(timeout=10) as client:
-        auth_response = await client.get(
-            f"{SUPABASE_URL}/auth/v1/user",
-            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {body.supabase_token}"},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            auth_response = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {body.supabase_token}"},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Supabase Auth bilan ulanishda xato") from exc
     if auth_response.status_code != 200:
         raise HTTPException(401, "Supabase sessiyasi yaroqsiz")
     auth_id = str(auth_response.json()["id"])
@@ -556,6 +605,10 @@ async def telegram(method: str, payload: dict[str, Any]) -> dict[str, Any] | Non
 @app.on_event("startup")
 async def configure_telegram_bot() -> None:
     """Configure Telegram automatically on every Render deploy."""
+    if SUPABASE_URL:
+        log.info("Supabase Project URL configured: %s", SUPABASE_URL)
+    else:
+        log.error("Supabase Project URL could not be configured")
     if not BOT_TOKEN:
         log.warning("BOT_TOKEN is missing; Telegram bot is disabled")
         return
@@ -613,7 +666,15 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
             "telegram_id": user["id"], "username": user.get("username"), "full_name": full_name,
             "phone": normalize_phone(contact["phone_number"]), "updated_at": iso(),
         }
-        await store.call("POST", "profiles", body=payload, prefer="resolution=merge-duplicates,return=minimal")
+        try:
+            await store.call("POST", "profiles", body=payload, prefer="resolution=merge-duplicates,return=minimal")
+        except HTTPException:
+            log.exception("Contact profile save failed")
+            await telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": "Telefon qabul qilindi, ammo bazaga saqlashda xato bor. Administrator Supabase sozlamalarini tekshirishi kerak.",
+            })
+            return JSONResponse({"ok": True})
         await telegram("sendMessage", {
             "chat_id": chat_id, "text": "✅ Profil tayyor. Endi 3D arenaga kiring!",
             "reply_markup": {"remove_keyboard": True},

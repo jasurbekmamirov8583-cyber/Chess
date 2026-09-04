@@ -35,11 +35,13 @@ requirements.txt   — Python paketlari
 2. `SQL Editor` ni ochib, `schema.sql` faylining hammasini bir marta ishga tushiring.
 3. `Authentication → Providers/Sign In → Anonymous Sign-ins` ni yoqing. Bu Telegram foydalanuvchisini Supabase Realtime sessiyasiga xavfsiz bog‘lash uchun kerak; foydalanuvchidan email/parol so‘ralmaydi.
 4. Project `Connect` oynasidan quyidagilarni oling:
-   - Project URL → `SUPABASE_URL`
+   - Project URL (`https://PROJECT_REF.supabase.co`) → `SUPABASE_URL`
    - Publishable key (`sb_publishable_...`) → `SUPABASE_PUBLISHABLE_KEY`
    - Secret key (`sb_secret_...`) → `SUPABASE_SECRET_KEY`
 
 `SUPABASE_SECRET_KEY` faqat Render environment’da turishi kerak. Uni GitHub yoki frontend kodiga yozmang. Loyiha eski `anon`/`service_role` kalitlari bilan ham mos ishlaydi, ammo yangi kalitlar tavsiya qilinadi.
+
+`SUPABASE_URL` maydoniga `postgresql://...` bilan boshlanadigan Database/Pooler connection string yozmang. Project URL doim `https://...supabase.co` shaklida bo‘ladi. Backend keng tarqalgan Supabase connection string’lardan Project URL’ni avtomatik aniqlay oladi, lekin Render environment’da to‘g‘ri URL saqlash tavsiya qilinadi.
 
 ## 2. Telegram bot va Mini App
 
