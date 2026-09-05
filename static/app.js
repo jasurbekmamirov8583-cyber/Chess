@@ -108,13 +108,14 @@ class ChessArena3D {
     this.container = container; this.interactive = interactive; this.hero = hero;
     this.active = true;this.disposed=false;
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(hero ? 34 : 40, 1, .1, 100);
-    this.camera.position.set(hero ? 5.8 : 0, hero ? 6.3 : 8.4, hero ? 6.8 : 8.1);
+    // A longer lens keeps the front rank from looking oversized on narrow phones.
+    this.camera = new THREE.PerspectiveCamera(hero ? 34 : 31, 1, .1, 100);
+    this.camera.position.set(hero ? 5.8 : 0, hero ? 6.3 : 11.6, hero ? 6.8 : 8.1);
     this.renderer = new THREE.WebGLRenderer({
       antialias: state.performanceMode!=='battery', alpha: true,
       powerPreference: state.performanceMode==='battery'?'low-power':'high-performance'
     });
-    const pixelCap=state.performanceMode==='battery'?1:state.performanceMode==='quality'?2.25:hero?1.35:innerWidth<700?1.75:2;
+    const pixelCap=state.performanceMode==='battery'?1.15:state.performanceMode==='quality'?2.5:hero?1.45:innerWidth<700?2:2.15;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,pixelCap));
     this.renderer.shadowMap.enabled=state.performanceMode!=='battery';this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.32;
@@ -125,7 +126,7 @@ class ChessArena3D {
     this.buildLights(); this.buildBoard();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, 0, 0); this.controls.enablePan = false;
-    this.controls.enableZoom = interactive; this.controls.minDistance = 6.5; this.controls.maxDistance = 24;
+    this.controls.enableZoom = interactive; this.controls.minDistance = 7.5; this.controls.maxDistance = 34;
     this.controls.minPolarAngle = .48; this.controls.maxPolarAngle = 1.25;
     this.controls.autoRotate = hero; this.controls.autoRotateSpeed = .7;
     this.controls.enableDamping = true; this.controls.dampingFactor = .06;
@@ -135,7 +136,9 @@ class ChessArena3D {
       this.renderer.domElement.addEventListener('pointerup',e=>{if(pointerStart&&Math.hypot(e.clientX-pointerStart.x,e.clientY-pointerStart.y)<7)this.pick(e);pointerStart=null});
     }
     this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container);
-    this.lastFrame=0;this.frameInterval=1000/(state.performanceMode==='battery'?24:state.performanceMode==='quality'?60:hero?30:45);this.loop();
+    // Do not throttle gameplay to 45fps: on a 60Hz display that cadence skips
+    // every other frame and feels like 30fps. Only decorative/battery scenes are capped.
+    this.lastFrame=0;this.frameInterval=state.performanceMode==='battery'?1000/30:hero?1000/30:0;this.loop();
   }
   buildLights() {
     this.scene.add(new THREE.HemisphereLight(0xffffff,0x73919c,2.65));
@@ -167,7 +170,7 @@ class ChessArena3D {
     const modern=state.pieceStyle==='modern',royal=state.pieceStyle==='royal';
     return color==='w'
       ? new THREE.MeshPhysicalMaterial({color:modern?0xf7f7f1:0xf0e6d2,roughness:modern?.34:.22,metalness:royal?.2:.06,clearcoat:royal?1:.68,clearcoatRoughness:.12})
-      : new THREE.MeshPhysicalMaterial({color:modern?0x20282c:0x151b1e,emissive:0x3e5963,emissiveIntensity:modern?.28:.38,roughness:modern?.32:.24,metalness:royal?.42:.18,clearcoat:royal?1:.7,clearcoatRoughness:.1});
+      : new THREE.MeshPhysicalMaterial({color:modern?0x343d40:0x293236,emissive:0x8da4aa,emissiveIntensity:modern?.13:.17,roughness:modern?.34:.26,metalness:royal?.4:.14,clearcoat:royal?1:.76,clearcoatRoughness:.1});
   }
   accent(color='w') { return new THREE.MeshStandardMaterial({color:color==='w'?0xe7a943:0xe66d42,metalness:.9,roughness:.18}); }
   gold() { return this.accent('w'); }
@@ -190,13 +193,12 @@ class ChessArena3D {
     } else if(type==='n'){
       this.lathe([[.29,.31],[.32,.43],[.29,.54],[.24,.64]],m,g,32);
       const profile=new THREE.Shape();
-      profile.moveTo(-.28,-.52);profile.bezierCurveTo(-.31,-.3,-.27,-.08,-.15,.1);profile.bezierCurveTo(-.04,.27,-.03,.43,-.08,.57);profile.lineTo(-.17,.79);profile.lineTo(-.01,.72);profile.lineTo(.09,.56);profile.bezierCurveTo(.27,.49,.39,.36,.43,.2);profile.lineTo(.61,.1);profile.bezierCurveTo(.67,.04,.62,-.05,.5,-.08);profile.lineTo(.29,-.12);profile.bezierCurveTo(.23,-.27,.2,-.4,.2,-.52);profile.closePath();
-      const horseGeometry=new THREE.ExtrudeGeometry(profile,{depth:.38,steps:1,curveSegments:18,bevelEnabled:true,bevelSegments:4,bevelSize:.045,bevelThickness:.045});horseGeometry.center();
-      const horse=new THREE.Mesh(horseGeometry,m);horse.position.set(-.02,1.17,-.19);horse.castShadow=true;horse.receiveShadow=true;g.add(horse);
-      for(const side of [-1,1]){const ear=this.part(new THREE.ConeGeometry(.065,.25,14),m,1.72,g);ear.position.set(-.08,1.72,side*.115);ear.rotation.z=-.18;const eye=this.part(new THREE.SphereGeometry(.034,14,10),accent,1.47,g);eye.position.set(.12,1.47,side*.225)}
-      for(const [x,y,rotation] of [[-.23,1.48,-.42],[-.28,1.33,-.32],[-.29,1.18,-.2],[-.27,1.03,-.08]]){const tuft=this.part(new THREE.ConeGeometry(.065,.2,10),accent,y,g);tuft.position.x=x;tuft.rotation.z=rotation}
-      for(const side of [-1,1]){const nostril=this.part(new THREE.SphereGeometry(.024,10,8),accent,1.28,g);nostril.position.set(.4,1.28,side*.16)}
-      const jaw=this.part(new THREE.TorusGeometry(.2,.025,8,24,Math.PI*.78),accent,1.24,g);jaw.position.x=.25;jaw.rotation.set(Math.PI/2,0,-.18);
+      profile.moveTo(-.3,-.55);profile.bezierCurveTo(-.34,-.28,-.27,.02,-.1,.25);profile.lineTo(-.16,.58);profile.lineTo(.01,.51);profile.lineTo(.1,.35);profile.bezierCurveTo(.3,.32,.45,.2,.52,.04);profile.lineTo(.66,-.04);profile.bezierCurveTo(.74,-.11,.68,-.2,.54,-.22);profile.lineTo(.3,-.25);profile.bezierCurveTo(.22,-.37,.18,-.48,.18,-.55);profile.closePath();
+      const horseGeometry=new THREE.ExtrudeGeometry(profile,{depth:.34,steps:1,curveSegments:24,bevelEnabled:true,bevelSegments:5,bevelSize:.05,bevelThickness:.05});horseGeometry.center();
+      const horse=new THREE.Mesh(horseGeometry,m);horse.position.set(-.01,1.19,-.17);horse.castShadow=true;horse.receiveShadow=true;g.add(horse);
+      for(const side of [-1,1]){const ear=this.part(new THREE.ConeGeometry(.055,.22,16),m,1.7,g);ear.position.set(-.05,1.7,side*.1);ear.rotation.z=-.17;const eye=this.part(new THREE.SphereGeometry(.033,16,12),accent,1.47,g);eye.position.set(.14,1.47,side*.205);const nostril=this.part(new THREE.SphereGeometry(.022,12,9),accent,1.27,g);nostril.position.set(.41,1.27,side*.15)}
+      for(const [x,y,rotation] of [[-.2,1.48,-.36],[-.24,1.34,-.27],[-.25,1.2,-.17],[-.23,1.07,-.07]]){const tuft=this.part(new THREE.ConeGeometry(.047,.15,12),accent,y,g);tuft.position.x=x;tuft.rotation.z=rotation}
+      const bridle=this.part(new THREE.TorusGeometry(.205,.018,8,28,Math.PI*.82),accent,1.26,g);bridle.position.x=.25;bridle.rotation.set(Math.PI/2,0,-.16);
     } else if(type==='b'){
       this.lathe([[.29,.31],[.3,.4],[.18,.58],[.15,.82],[.23,.91]],m,g);this.ring(.225,.91,accent,g,.032);
       const crown=this.part(new THREE.SphereGeometry(.25,30,22),m,1.16,g);crown.scale.set(.86,1.25,.86);const slash=this.part(new THREE.BoxGeometry(.055,.46,.3),accent,1.19,g);slash.rotation.z=-.48;this.part(new THREE.SphereGeometry(.065,16,12),accent,1.49,g);
@@ -211,7 +213,7 @@ class ChessArena3D {
     const evolution=Math.floor(Number(state.profile?.army_xp||0)/120)+1;
     if(evolution>=3&&type!=='p'){const aura=this.ring(.43,.08,new THREE.MeshBasicMaterial({color:evolution>=6?0x69f2ff:0xffc766,transparent:true,opacity:.34}),g,.018);aura.userData.aura=true}
     if(evolution>=5&&['q','k'].includes(type)){const gem=this.part(new THREE.OctahedronGeometry(.075),accent,type==='k'?1.91:1.7,g);gem.rotation.y=.5}
-    const baseScale=type==='p'?.73:.71;
+    const baseScale=type==='p'?.69:.67;
     if(state.pieceStyle==='modern')g.scale.set(baseScale*1.04,baseScale*.94,baseScale*1.04);
     else if(state.pieceStyle==='royal')g.scale.set(baseScale*.97,baseScale*1.08,baseScale*.97);
     else g.scale.setScalar(baseScale);
@@ -236,14 +238,21 @@ class ChessArena3D {
     if(mover.userData.type==='p'&&from[0]!==to[0]&&!targetOccupied)removeAt(`${to[0]}${from[1]}`);
     if(mover.userData.type==='k'&&Math.abs(from.charCodeAt(0)-to.charCodeAt(0))===2){const kingSide=to[0]==='g',rookFrom=`${kingSide?'h':'a'}${from[1]}`,rookTo=`${kingSide?'f':'d'}${from[1]}`,rook=this.pieces.get(rookFrom);if(rook){this.pieces.delete(rookFrom);this.pieces.set(rookTo,rook);rook.position.copy(this.squarePosition(rookTo));rook.userData.square=rookTo}}
     this.pieces.delete(from);
-    if(uci[4]){const promoted=this.piece(uci[4],mover.userData.color);this.root.remove(mover);promoted.position.copy(this.squarePosition(to));promoted.userData={...promoted.userData,square:to,color:mover.userData.color,type:uci[4]};this.root.add(promoted);this.pieces.set(to,promoted);return}
-    mover.position.copy(this.squarePosition(to));mover.rotation.z=0;const baseScale=mover.userData.type==='p'?.73:.71;if(state.pieceStyle==='modern')mover.scale.set(baseScale*1.04,baseScale*.94,baseScale*1.04);else if(state.pieceStyle==='royal')mover.scale.set(baseScale*.97,baseScale*1.08,baseScale*.97);else mover.scale.setScalar(baseScale);mover.userData.square=to;this.pieces.set(to,mover);
+    if(uci[4]){const promoted=this.piece(uci[4],mover.userData.color);this.root.remove(mover);promoted.position.copy(this.squarePosition(to));promoted.userData={...promoted.userData,square:to,color:mover.userData.color,type:uci[4]};this.root.add(promoted);this.pieces.set(to,promoted);this.reconcile(fen);return}
+    mover.position.copy(this.squarePosition(to));mover.rotation.set(0,mover.userData.color==='b'?Math.PI:0,0);mover.visible=true;mover.traverse(object=>object.visible=true);const baseScale=mover.userData.type==='p'?.69:.67;if(state.pieceStyle==='modern')mover.scale.set(baseScale*1.04,baseScale*.94,baseScale*1.04);else if(state.pieceStyle==='royal')mover.scale.set(baseScale*.97,baseScale*1.08,baseScale*.97);else mover.scale.setScalar(baseScale);mover.userData.square=to;this.pieces.set(to,mover);this.reconcile(fen);
+  }
+  reconcile(fen){
+    let chess;try{chess=new Chess(fen)}catch{return}
+    const expected=new Map();for(const row of chess.board())for(const piece of row)if(piece)expected.set(piece.square,`${piece.color}${piece.type}`);
+    let valid=expected.size===this.pieces.size;
+    if(valid)for(const [square,code] of expected){const model=this.pieces.get(square);if(!model||`${model.userData.color}${model.userData.type}`!==code||!Number.isFinite(model.position.x)||!Number.isFinite(model.position.z)){valid=false;break}}
+    if(!valid)this.load(fen);
   }
   orient(color='white') {
     this.viewColor=color;
     const rect=this.container.getBoundingClientRect(),aspect=Math.max(.45,rect.width/Math.max(1,rect.height));
-    const distance=this.hero?7.2:(aspect<.95?Math.min(16.5,9.4/aspect):8.7),sign=color==='black'?-1:1;
-    this.camera.position.set(0,distance*.94,sign*distance);this.controls.target.set(0,.18,0);this.controls.update();
+    const distance=this.hero?7.2:(aspect<.95?Math.min(21.5,12.2/aspect):12.2),sign=color==='black'?-1:1;
+    this.camera.position.set(0,distance*1.18,sign*distance*.78);this.controls.target.set(0,.08,0);this.controls.update();
   }
   showMoves(selected, destinations=[]) {
     this.clearMarkers();
@@ -276,8 +285,8 @@ class ChessArena3D {
     const from=uci.slice(0,2),to=uci.slice(2,4),mover=this.pieces.get(from);if(!mover){this.load(state.game.fen);return}
     const start=mover.position.clone(),end=this.squarePosition(to),victim=this.pieces.get(to),victimScale=victim?.scale.clone();
     let weapon=null;if(captured){const arsenal={r:'hammer',n:'lance',b:'staff',p:'spear'};weapon=this.weapon(arsenal[mover.userData.type]||'sword');weapon.position.set(0,.65,.05);weapon.rotation.z=-1.5;mover.add(weapon);audio.capture()}else audio.move();
-    const duration=captured?185:95,t0=performance.now();
-    await new Promise(resolve=>{const tick=(time)=>{const p=Math.min(1,(time-t0)/duration),ease=1-Math.pow(1-p,3);mover.position.lerpVectors(start,end,ease);mover.position.y=.14+Math.sin(p*Math.PI)*(captured ? .34 : .16);if(weapon)weapon.rotation.z=-1.5+p*3.1;if(victim&&p>.42){const q=(p-.42)/.58;victim.rotation.z=q*1.3;victim.scale.copy(victimScale).multiplyScalar(Math.max(.05,1-q*.95));victim.position.y=.14-q*.45}p<1?requestAnimationFrame(tick):resolve()};requestAnimationFrame(tick)});
+    const duration=captured?220:138,t0=performance.now();
+    await new Promise(resolve=>{const tick=(time)=>{const p=Math.min(1,(time-t0)/duration),ease=p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;mover.position.lerpVectors(start,end,ease);mover.position.y=.14+Math.sin(p*Math.PI)*(captured ? .3 : .12);if(weapon)weapon.rotation.z=-1.5+p*3.1;if(victim&&p>.42){const q=(p-.42)/.58;victim.rotation.z=q*1.3;victim.scale.copy(victimScale).multiplyScalar(Math.max(.05,1-q*.95));victim.position.y=.14-q*.45}this.controls.update();this.renderer.render(this.scene,this.camera);p<1?requestAnimationFrame(tick):resolve()};requestAnimationFrame(tick)});
     if(weapon){mover.remove(weapon);this.release(weapon)}
   }
   finishEffect(kind,loserColor=''){
@@ -289,17 +298,17 @@ class ChessArena3D {
   }
   resize(){const w=this.container.clientWidth,h=this.container.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h,false);this.camera.aspect=w/h;this.camera.updateProjectionMatrix();if(!this.hero)this.orient(this.viewColor||'white')}
   dispose(){this.disposed=true;this.active=false;this.resizeObserver?.disconnect();this.controls?.dispose();this.release(this.scene);this.renderer.dispose();this.renderer.domElement.remove()}
-  loop(time=performance.now()){if(this.disposed)return;requestAnimationFrame(next=>this.loop(next));if(!this.active||time-this.lastFrame<this.frameInterval)return;this.lastFrame=time;this.controls.update();if(this.hero)this.root.position.y=Math.sin(time/900)*.04;this.renderer.render(this.scene,this.camera)}
+  loop(time=performance.now()){if(this.disposed)return;requestAnimationFrame(next=>this.loop(next));if(!this.active||(this.frameInterval&&time-this.lastFrame<this.frameInterval*.88))return;this.lastFrame=time;this.controls.update();if(this.hero)this.root.position.y=Math.sin(time/900)*.04;this.renderer.render(this.scene,this.camera)}
 }
 
 function pieceSvg(type,color){
   const shapes={
-    p:'<circle class="piece-body" cx="50" cy="25" r="13"/><path class="piece-body" d="M37 42h26c-1 12-6 17-10 21h12l7 14H28l7-14h12c-5-4-9-9-10-21Z"/><path class="piece-line" d="M34 63h32M28 78h44"/>',
-    r:'<path class="piece-body" d="M25 17h11v9h9v-9h10v9h9v-9h11v20l-8 7 4 29 8 8H21l8-8 4-29-8-7Z"/><path class="piece-line" d="M30 39h40M29 72h42M22 81h56"/>',
-    n:'<path class="piece-body" d="M27 79h51l-8-11-5-30C62 23 54 15 39 12l4 11C32 28 27 39 25 52l17-10 11 5-5 9c-9 7-15 13-21 23Z"/><path class="piece-line" d="M27 79h51M42 42c5-5 11-8 18-9"/><circle class="piece-accent" cx="48" cy="29" r="3"/>',
-    b:'<path class="piece-body" d="M50 12c10 9 16 19 12 29-2 6-7 10-12 14 9 2 15 8 16 18l10 8H24l10-8c1-10 7-16 16-18-7-5-12-11-12-19 0-9 5-17 12-24Z"/><path class="piece-line" d="m45 25 12 17M34 72h32M24 81h52"/>',
-    q:'<circle class="piece-body" cx="22" cy="22" r="5"/><circle class="piece-body" cx="40" cy="15" r="5"/><circle class="piece-body" cx="60" cy="15" r="5"/><circle class="piece-body" cx="78" cy="22" r="5"/><path class="piece-body" d="m22 28 11 33h34l11-33-18 19-10-25-10 25Z"/><path class="piece-body" d="M31 62h38l5 11 7 8H19l7-8Z"/><path class="piece-line" d="M27 72h46M20 81h60"/>',
-    k:'<path class="piece-body" d="M46 11h8v10h10v8H54v11c10 3 16 11 15 21l7 12 6 8H18l6-8 7-12c-1-10 5-18 15-21V29H36v-8h10Z"/><path class="piece-line" d="M31 61h38M24 73h52M18 81h64"/>'
+    p:'<circle class="piece-body" cx="50" cy="22.5" r="13.5"/><path class="piece-body" d="M37.5 41c0 7 3.2 12.8 8.4 17.3-8.5 2.4-13.7 7-14.5 13.6h37.2c-.8-6.6-6-11.2-14.5-13.6C59.3 53.8 62.5 48 62.5 41Z"/><path class="piece-body" d="M26.5 72h47l6.5 9.5H20Z"/><path class="piece-line" d="M32 71.8h36M22.5 81.5h55"/>',
+    r:'<path class="piece-body" d="M22 16h14v9h8v-9h12v9h8v-9h14v22l-8.2 7.5-3.6 25.2 8.8 7.8 3 4.5H19l3-4.5 8.8-7.8-3.6-25.2L22 38Z"/><path class="piece-line" d="M27 38h46M31 46h38M29 70.5h42M22 78.5h56"/><path class="piece-accent" d="M39 48h22l2.5 19h-27Z"/>',
+    n:'<path class="piece-body" d="M22 82h59l-4-7.5-8.2-8.8-1.1-25.1c-.8-14.2-10-24.9-27.3-30.1l2.8 12.1c-11.4 7-18.4 17.7-20.2 31.8l18.3-9.9 11.1 5.6-5.5 9.2C36 65.7 27.7 72.6 22 82Z"/><path class="piece-line" d="M23.5 78h51M41.5 44.5c5-6.2 12.4-9.7 22.1-10.5M43.2 22.6l9 7.5"/><path class="piece-accent" d="M45.2 29.3a3.7 3.7 0 1 0 7.4 0 3.7 3.7 0 0 0-7.4 0Z"/>',
+    b:'<path class="piece-body" d="M50 9.5c10.8 9.2 17 19 14.6 28.4-1.7 7-7.1 12.9-14.6 18.1-7.5-5.2-12.9-11.1-14.6-18.1C33 28.5 39.2 18.7 50 9.5Z"/><path class="piece-body" d="M39.5 54.5h21C67 59 69.8 64.7 69 71H31c-.8-6.3 2-12 8.5-16.5ZM26.5 71h47l8 11H18.5Z"/><path class="piece-line" d="m44 23 13 16M31.5 71h37M21 82h58"/>',
+    q:'<circle class="piece-body" cx="20" cy="21" r="5.4"/><circle class="piece-body" cx="39" cy="13.5" r="5.4"/><circle class="piece-body" cx="61" cy="13.5" r="5.4"/><circle class="piece-body" cx="80" cy="21" r="5.4"/><path class="piece-body" d="m20.5 27 11.2 35h36.6l11.2-35-18 20.3L50 21.5 38.5 47.3Z"/><path class="piece-body" d="M29.5 61.5h41L75 72l8 10H17l8-10Z"/><path class="piece-line" d="M26 71.8h48M20 82h60"/><path class="piece-accent" d="M35 54h30l-2 7H37Z"/>',
+    k:'<path class="piece-body" d="M45.5 8h9v11h11v9h-11v10.2C65 41.1 71.2 49 70.3 59.5L67.5 69l8.5 6.5 6 7H18l6-7 8.5-6.5-2.8-9.5C28.8 49 35 41.1 45.5 38.2V28h-11v-9h11Z"/><path class="piece-line" d="M31 59.5h38M32.5 69h35M24 75.5h52M20 82.5h60"/><path class="piece-accent" d="M40 45c5.8-3 14.2-3 20 0l-3.5 11h-13Z"/>'
   };
   return `<svg class="piece-2d ${color==='w'?'white':'black'}" viewBox="0 0 100 100" aria-hidden="true"><g>${shapes[type]||shapes.p}</g></svg>`;
 }

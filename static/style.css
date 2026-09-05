@@ -429,11 +429,11 @@ body { background:radial-gradient(circle at 15% 0,rgba(87,112,73,.18),transparen
 .shape-floating .board-2d { border-width:3px;border-radius:4px;box-shadow:0 26px 42px rgba(0,0,0,.58),0 9px 0 var(--board-frame),0 10px 0 rgba(255,255,255,.08); }
 .shape-tournament .board-2d { border-width:6px;border-radius:3px; }
 
-.piece-2d { width:94%;height:94%;display:block;overflow:visible;transform:translateY(-1%);filter:drop-shadow(0 3px 2px rgba(0,0,0,.32)); }
-.piece-2d .piece-body { stroke-linejoin:round;stroke-linecap:round;stroke-width:4; }
-.piece-2d .piece-line { fill:none;stroke-linejoin:round;stroke-linecap:round;stroke-width:3.2; }
-.piece-2d.white .piece-body { fill:#f8f8f3;stroke:#3d4140; }.piece-2d.white .piece-line { stroke:#69706e; }.piece-2d.white .piece-accent { fill:#4a504e; }
-.piece-2d.black .piece-body { fill:#252927;stroke:#111412; }.piece-2d.black .piece-line { stroke:#9ca49e; }.piece-2d.black .piece-accent { fill:#dce3dd; }
+.piece-2d { width:99%;height:99%;display:block;overflow:visible;transform:translateY(-1%) scale(1.015);filter:drop-shadow(0 3px 2px rgba(0,0,0,.34)); }
+.piece-2d .piece-body { stroke-linejoin:round;stroke-linecap:round;stroke-width:3.8; }
+.piece-2d .piece-line { fill:none;stroke-linejoin:round;stroke-linecap:round;stroke-width:3; }
+.piece-2d.white .piece-body { fill:#fffefa;stroke:#383b39; }.piece-2d.white .piece-line { stroke:#555b57; }.piece-2d.white .piece-accent { fill:#3f4541;stroke:#303431;stroke-width:1.2; }
+.piece-2d.black .piece-body { fill:#272b29;stroke:#090b0a; }.piece-2d.black .piece-line { stroke:#080a09; }.piece-2d.black .piece-accent { fill:#bfc7c1;stroke:#090b0a;stroke-width:1.2; }
 .pieces-modern .piece-2d g { transform:translate(4px,4px) scale(.92);transform-origin:center; }.pieces-modern .piece-2d .piece-body { stroke-width:5.5; }.pieces-modern .piece-2d .piece-line { stroke-width:2.4; }
 .pieces-royal .piece-2d { filter:drop-shadow(0 4px 3px rgba(0,0,0,.4)); }.pieces-royal .piece-2d .piece-accent { fill:#d6a84f; }.pieces-royal .piece-2d.white .piece-line { stroke:#a77b2e; }.pieces-royal .piece-2d.black .piece-line { stroke:#d1a95f; }
 
